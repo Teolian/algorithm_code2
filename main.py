@@ -12,273 +12,255 @@ class MyAI(Alg3D):
         player: int,
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
-        """СУПЕР-АГРЕССИВНЫЙ ИИ - стратегия salmon1 + исправления"""
+        """ИСПРАВЛЕННЫЙ ИИ - правильная физика + агрессия"""
         
         try:
-            # 1. МГНОВЕННАЯ ПОБЕДА
+            # 1. НЕМЕДЛЕННАЯ ПОБЕДА
             win_move = self.find_win(board, player)
             if win_move:
                 return win_move
                 
-            # 2. БЛОКИРОВКА КРИТИЧЕСКИХ УГРОЗ
+            # 2. КРИТИЧЕСКАЯ БЛОКИРОВКА
             opponent = 3 - player
-            critical_block = self.find_critical_threats(board, opponent)
-            if critical_block:
-                return critical_block
-                
-            # 3. АГРЕССИВНАЯ АТАКА - как salmon1
-            attack_move = self.aggressive_attack(board, player)
-            if attack_move:
-                return attack_move
-                
-            # 4. БЛОКИРОВКА ОБЫЧНЫХ УГРОЗ
             block_move = self.find_win(board, opponent)
             if block_move:
                 return block_move
                 
-            # 5. СТРАТЕГИЧЕСКИЙ ХОД - копируем salmon1
-            return self.salmon_strategy(board, player)
+            # 3. СОЗДАНИЕ ДВОЙНЫХ УГРОЗ
+            double_threat = self.find_double_threat(board, player)
+            if double_threat:
+                return double_threat
+                
+            # 4. БЛОКИРОВКА ДВОЙНЫХ УГРОЗ ПРОТИВНИКА
+            block_double = self.find_double_threat(board, opponent)
+            if block_double:
+                return block_double
+                
+            # 5. ЛУЧШИЙ СТРАТЕГИЧЕСКИЙ ХОД
+            return self.find_best_move(board, player)
             
         except Exception:
-            return self.safe_move(board)
+            return self.emergency_move(board)
 
     def find_win(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
-        """Поиск мгновенной победы"""
+        """Поиск выигрышного хода"""
         try:
             for x in range(4):
                 for y in range(4):
-                    z = self.drop_z(board, x, y)
-                    if z is None:
+                    # ИСПРАВЛЕНО: правильная проверка возможности хода
+                    if not self.can_place(board, x, y):
                         continue
                         
+                    z = self.get_drop_z(board, x, y)
+                    
+                    # Симулируем ход
                     board[z][y][x] = player
                     
-                    if self.check_win_fast(board, x, y, z, player):
+                    # Проверяем победу
+                    if self.is_win(board, x, y, z, player):
                         board[z][y][x] = 0
                         return (x, y)
                     
                     board[z][y][x] = 0
                     
             return None
-        except:
+        except Exception:
             return None
 
-    def find_critical_threats(self, board: List[List[List[int]]], opponent: int) -> Optional[Tuple[int, int]]:
-        """Поиск критических угроз противника (2+ угрозы одновременно)"""
+    def find_double_threat(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
+        """Поиск хода, создающего двойную угрозу"""
         try:
             for x in range(4):
                 for y in range(4):
-                    z = self.drop_z(board, x, y)
-                    if z is None:
+                    if not self.can_place(board, x, y):
                         continue
                         
-                    # Симулируем ход противника
-                    board[z][y][x] = opponent
+                    z = self.get_drop_z(board, x, y)
                     
-                    # Считаем угрозы, которые создаст противник
-                    threat_count = self.count_winning_moves(board, opponent)
+                    # Симулируем ход
+                    board[z][y][x] = player
+                    
+                    # Считаем угрозы после хода
+                    threats = self.count_threats(board, player)
                     
                     board[z][y][x] = 0
                     
-                    # Если создает 2+ угрозы - ОБЯЗАТЕЛЬНО блокируем!
-                    if threat_count >= 2:
+                    # Если создаем 2+ угрозы - отличный ход!
+                    if threats >= 2:
                         return (x, y)
                         
             return None
-        except:
+        except Exception:
             return None
 
-    def aggressive_attack(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
-        """АГРЕССИВНАЯ АТАКА - как salmon1"""
+    def count_threats(self, board: List[List[List[int]]], player: int) -> int:
+        """Подсчет угроз (позиций где можем выиграть следующим ходом)"""
         try:
-            best_move = None
-            best_score = -999
+            threat_count = 0
             
-            # Проверяем все позиции на агрессивность
             for x in range(4):
                 for y in range(4):
-                    z = self.drop_z(board, x, y)
-                    if z is None:
+                    if not self.can_place(board, x, y):
                         continue
                         
-                    # Оцениваем агрессивность хода
-                    score = self.evaluate_aggression(board, x, y, z, player)
+                    z = self.get_drop_z(board, x, y)
                     
-                    if score > best_score:
-                        best_score = score
-                        best_move = (x, y)
-            
-            # Возвращаем только если ход действительно агрессивный
-            return best_move if best_score > 50 else None
-        except:
-            return None
-
-    def evaluate_aggression(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
-        """Оценка агрессивности хода"""
-        try:
-            board[z][y][x] = player
-            score = 0
-            
-            # 1. Сколько угроз создаем
-            threats = self.count_winning_moves(board, player)
-            score += threats * 100
-            
-            # 2. Длинные линии (агрессивно!)
-            max_line = self.get_max_line_length(board, x, y, z, player)
-            if max_line >= 3:
-                score += max_line * 50
-            elif max_line == 2:
-                score += 25
-            
-            # 3. Центральность (как salmon1)
-            center_bonus = self.get_center_bonus(x, y)
-            score += center_bonus
-            
-            # 4. Высота дает контроль
-            score += z * 10
-            
-            # 5. Связность с другими фишками
-            neighbors = self.count_neighbors(board, x, y, z, player)
-            score += neighbors * 15
-            
-            board[z][y][x] = 0
-            return score
-        except:
+                    board[z][y][x] = player
+                    
+                    if self.is_win(board, x, y, z, player):
+                        threat_count += 1
+                    
+                    board[z][y][x] = 0
+                    
+            return threat_count
+        except Exception:
             return 0
 
-    def salmon_strategy(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
-        """Стратегия salmon1 - центр и контроль"""
-        try:
-            # Анализируем общее состояние игры
-            move_count = self.count_total_moves(board)
-            
-            # Дебютная стратегия
-            if move_count <= 4:
-                return self.opening_strategy(board)
-            
-            # Мидгейм - агрессивная борьба за центр
-            if move_count <= 20:
-                return self.midgame_strategy(board, player)
-            
-            # Эндгейм - точные ходы
-            return self.endgame_strategy(board, player)
-            
-        except:
-            return self.safe_move(board)
-
-    def opening_strategy(self, board: List[List[List[int]]]) -> Tuple[int, int]:
-        """Дебютная стратегия - как salmon1"""
-        # salmon1 всегда начинает с центра
-        center_moves = [(1, 1), (2, 2), (1, 2), (2, 1)]
-        
-        for x, y in center_moves:
-            if self.drop_z(board, x, y) is not None:
-                return (x, y)
-        
-        return (1, 1)
-
-    def midgame_strategy(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
-        """Мидгейм - агрессивная борьба"""
+    def find_best_move(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
+        """Лучший стратегический ход"""
         try:
             best_move = None
-            best_score = -999
+            best_score = -9999
             
-            # Приоритетные позиции для атаки
-            priority_moves = [
+            # Порядок проверки - сначала лучшие позиции
+            move_order = [
                 (1, 1), (2, 2), (1, 2), (2, 1),  # Центр
-                (0, 1), (1, 0), (3, 2), (2, 3),  # Околоцентр
-                (1, 3), (3, 1), (0, 2), (2, 0),  # Контроль краев
+                (0, 1), (1, 0), (3, 2), (2, 3),  # Околоцентр  
+                (0, 2), (2, 0), (3, 1), (1, 3),  # Вторая линия
+                (0, 0), (3, 3), (0, 3), (3, 0)   # Углы
             ]
             
-            for x, y in priority_moves:
-                if self.drop_z(board, x, y) is None:
+            for x, y in move_order:
+                if not self.can_place(board, x, y):
                     continue
                     
-                score = self.evaluate_position(board, x, y, player)
+                score = self.evaluate_move(board, x, y, player)
                 
                 if score > best_score:
                     best_score = score
                     best_move = (x, y)
             
-            return best_move if best_move else self.safe_move(board)
-        except:
-            return self.safe_move(board)
+            return best_move if best_move else self.emergency_move(board)
+        except Exception:
+            return self.emergency_move(board)
 
-    def endgame_strategy(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
-        """Эндгейм - точные ходы"""
-        return self.find_best_tactical_move(board, player)
-
-    def evaluate_position(self, board: List[List[List[int]]], x: int, y: int, player: int) -> int:
-        """Полная оценка позиции"""
+    def evaluate_move(self, board: List[List[List[int]]], x: int, y: int, player: int) -> int:
+        """Оценка качества хода"""
         try:
-            z = self.drop_z(board, x, y)
-            if z is None:
-                return -999
-                
-            board[z][y][x] = player
+            z = self.get_drop_z(board, x, y)
             score = 0
             
-            # 1. Потенциальные угрозы
-            threats = self.count_winning_moves(board, player)
-            score += threats * 200
+            # Симулируем ход
+            board[z][y][x] = player
             
-            # 2. Максимальная длина линии
-            max_line = self.get_max_line_length(board, x, y, z, player)
-            score += max_line * 30
+            # 1. Центральные позиции лучше
+            center_dist = abs(x - 1.5) + abs(y - 1.5)
+            score += int(40 - center_dist * 10)
             
-            # 3. Центральность (критично!)
-            score += self.get_center_bonus(x, y)
+            # 2. Высота дает преимущество
+            score += z * 5
             
-            # 4. Высота
-            score += z * 8
+            # 3. Анализ линий
+            score += self.analyze_lines(board, x, y, z, player)
             
-            # 5. Блокировка противника
-            opponent = 3 - player
-            board[z][y][x] = opponent
-            opponent_threats = self.count_winning_moves(board, opponent)
-            score += opponent_threats * 150  # Бонус за блокировку
+            # 4. Связность с другими фишками
+            score += self.count_connections(board, x, y, z, player) * 8
             
             board[z][y][x] = 0
+            
             return score
-        except:
+        except Exception:
             return 0
 
-    def find_best_tactical_move(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
-        """Лучший тактический ход"""
+    def analyze_lines(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
+        """Анализ линий от данной позиции"""
         try:
-            best_move = None
-            best_score = -999
+            score = 0
+            opponent = 3 - player
             
-            for x in range(4):
-                for y in range(4):
-                    if self.drop_z(board, x, y) is None:
-                        continue
-                        
-                    score = self.evaluate_position(board, x, y, player)
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_move = (x, y)
-            
-            return best_move if best_move else self.safe_move(board)
-        except:
-            return self.safe_move(board)
-
-    def check_win_fast(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> bool:
-        """БЫСТРАЯ проверка победы"""
-        try:
-            # Все направления для Connect 4 в 3D
+            # Все направления в 3D
             directions = [
-                (1,0,0), (0,1,0), (0,0,1),                    # Оси
-                (1,1,0), (1,-1,0), (1,0,1), (1,0,-1),         # Плоскостные диагонали
-                (0,1,1), (0,1,-1),                            # YZ диагонали
-                (1,1,1), (1,1,-1), (1,-1,1), (-1,1,1)        # Пространственные
+                (1, 0, 0), (0, 1, 0), (0, 0, 1),      # Оси
+                (1, 1, 0), (1, -1, 0),                # XY диагонали
+                (1, 0, 1), (1, 0, -1),                # XZ диагонали  
+                (0, 1, 1), (0, 1, -1),                # YZ диагонали
+                (1, 1, 1), (1, 1, -1), (1, -1, 1), (-1, 1, 1)  # 3D диагонали
             ]
             
             for dx, dy, dz in directions:
-                count = 1
+                our_count = 1
+                their_count = 0
+                empty_count = 0
                 
-                # Положительное направление
+                # Проверяем в обе стороны от позиции
+                for direction in [1, -1]:
+                    for step in range(1, 4):
+                        nx = x + dx * step * direction
+                        ny = y + dy * step * direction
+                        nz = z + dz * step * direction
+                        
+                        if not (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4):
+                            break
+                            
+                        cell = board[nz][ny][nx]
+                        if cell == player:
+                            our_count += 1
+                        elif cell == opponent:
+                            their_count += 1
+                            break
+                        else:
+                            empty_count += 1
+                            if step < 3:  # Смотрим только ближайшие пустые места
+                                continue
+                            break
+                
+                # Оценка линии
+                if their_count == 0:  # Не заблокировано противником
+                    if our_count >= 3:
+                        score += 100
+                    elif our_count == 2:
+                        score += 20
+                    else:
+                        score += 2
+                        
+            return score
+        except Exception:
+            return 0
+
+    def count_connections(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
+        """Подсчет соседних фишек того же игрока"""
+        try:
+            connections = 0
+            
+            # Проверяем все 6 соседних позиций
+            neighbors = [(-1,0,0), (1,0,0), (0,-1,0), (0,1,0), (0,0,-1), (0,0,1)]
+            
+            for dx, dy, dz in neighbors:
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
+                    board[nz][ny][nx] == player):
+                    connections += 1
+                    
+            return connections
+        except Exception:
+            return 0
+
+    def is_win(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> bool:
+        """ПРАВИЛЬНАЯ проверка победы"""
+        try:
+            # Все возможные направления для Connect 4
+            directions = [
+                (1, 0, 0), (0, 1, 0), (0, 0, 1),      # Основные оси
+                (1, 1, 0), (1, -1, 0),                # XY диагонали
+                (1, 0, 1), (1, 0, -1),                # XZ диагонали
+                (0, 1, 1), (0, 1, -1),                # YZ диагонали
+                (1, 1, 1), (1, 1, -1), (1, -1, 1), (-1, 1, 1)  # 3D диагонали
+            ]
+            
+            for dx, dy, dz in directions:
+                count = 1  # Текущая позиция
+                
+                # Проверяем в положительном направлении
                 nx, ny, nz = x + dx, y + dy, z + dz
                 while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
                        board[nz][ny][nx] == player):
@@ -287,7 +269,7 @@ class MyAI(Alg3D):
                     ny += dy
                     nz += dz
                 
-                # Отрицательное направление
+                # Проверяем в отрицательном направлении
                 nx, ny, nz = x - dx, y - dy, z - dz
                 while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
                        board[nz][ny][nx] == player):
@@ -300,119 +282,52 @@ class MyAI(Alg3D):
                     return True
                     
             return False
-        except:
+        except Exception:
             return False
 
-    def count_winning_moves(self, board: List[List[List[int]]], player: int) -> int:
-        """Подсчет выигрышных ходов"""
-        try:
-            count = 0
-            for x in range(4):
-                for y in range(4):
-                    z = self.drop_z(board, x, y)
-                    if z is None:
-                        continue
-                        
-                    board[z][y][x] = player
-                    if self.check_win_fast(board, x, y, z, player):
-                        count += 1
-                    board[z][y][x] = 0
-                    
-            return count
-        except:
-            return 0
-
-    def get_max_line_length(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
-        """Максимальная длина линии от позиции"""
-        try:
-            max_length = 1
-            
-            directions = [(1,0,0), (0,1,0), (0,0,1), (1,1,0), (1,1,1)]
-            
-            for dx, dy, dz in directions:
-                count = 1
-                
-                # Положительное направление
-                nx, ny, nz = x + dx, y + dy, z + dz
-                while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                       board[nz][ny][nx] == player):
-                    count += 1
-                    nx += dx
-                    ny += dy
-                    nz += dz
-                
-                # Отрицательное направление
-                nx, ny, nz = x - dx, y - dy, z - dz
-                while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                       board[nz][ny][nx] == player):
-                    count += 1
-                    nx -= dx
-                    ny -= dy
-                    nz -= dz
-                
-                max_length = max(max_length, count)
-            
-            return max_length
-        except:
-            return 1
-
-    def get_center_bonus(self, x: int, y: int) -> int:
-        """Бонус за центральность"""
-        center_distance = abs(x - 1.5) + abs(y - 1.5)
-        return int(50 - center_distance * 12)
-
-    def count_neighbors(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
-        """Подсчет соседних фишек"""
-        try:
-            count = 0
-            for dx, dy, dz in [(-1,0,0), (1,0,0), (0,-1,0), (0,1,0), (0,0,-1), (0,0,1)]:
-                nx, ny, nz = x + dx, y + dy, z + dz
-                if (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                    board[nz][ny][nx] == player):
-                    count += 1
-            return count
-        except:
-            return 0
-
-    def count_total_moves(self, board: List[List[List[int]]]) -> int:
-        """Общее количество ходов"""
-        try:
-            count = 0
-            for x in range(4):
-                for y in range(4):
-                    for z in range(4):
-                        if board[z][y][x] != 0:
-                            count += 1
-            return count
-        except:
-            return 0
-
-    def drop_z(self, board: List[List[List[int]]], x: int, y: int) -> Optional[int]:
-        """Определение высоты падения"""
+    def can_place(self, board: List[List[List[int]]], x: int, y: int) -> bool:
+        """КРИТИЧЕСКИ ВАЖНО: проверка возможности размещения фишки"""
         try:
             if not (0 <= x < 4 and 0 <= y < 4):
-                return None
+                return False
+                
+            # Проверяем, есть ли свободное место в колонне (x, y)
+            for z in range(4):
+                if board[z][y][x] == 0:
+                    return True
+                    
+            return False  # Колонна полная
+        except Exception:
+            return False
+
+    def get_drop_z(self, board: List[List[List[int]]], x: int, y: int) -> int:
+        """ИСПРАВЛЕНО: правильная физика падения"""
+        try:
+            # ВАЖНО: фишка падает на самый нижний доступный уровень
             for z in range(4):
                 if board[z][y][x] == 0:
                     return z
-            return None
-        except:
-            return None
+            return 0  # Fallback (не должно произойти если can_place вернул True)
+        except Exception:
+            return 0
 
-    def safe_move(self, board: List[List[List[int]]]) -> Tuple[int, int]:
-        """Безопасный ход"""
+    def emergency_move(self, board: List[List[List[int]]]) -> Tuple[int, int]:
+        """Экстренный безопасный ход"""
         try:
-            # Приоритет - центр
-            for x, y in [(1, 1), (2, 2), (1, 2), (2, 1)]:
-                if self.drop_z(board, x, y) is not None:
+            # Пробуем центральные позиции
+            emergency_moves = [(1, 1), (2, 2), (1, 2), (2, 1)]
+            
+            for x, y in emergency_moves:
+                if self.can_place(board, x, y):
                     return (x, y)
             
-            # Любой доступный ход
+            # Пробуем любую доступную позицию
             for x in range(4):
                 for y in range(4):
-                    if self.drop_z(board, x, y) is not None:
+                    if self.can_place(board, x, y):
                         return (x, y)
                         
+            # Крайний случай
             return (0, 0)
-        except:
+        except Exception:
             return (0, 0)
