@@ -12,7 +12,7 @@ class MyAI(Alg3D):
         player: int,
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
-        """Улучшенный ИИ с правильной защитой по всем направлениям"""
+        """Быстрый и агрессивный ИИ с правильной защитой"""
         
         try:
             # 1. НЕМЕДЛЕННАЯ ПОБЕДА - максимальный приоритет
@@ -20,67 +20,36 @@ class MyAI(Alg3D):
             if win_move:
                 return win_move
                 
-            # 2. КРИТИЧЕСКАЯ БЛОКИРОВКА - исправлена!
+            # 2. КРИТИЧЕСКАЯ БЛОКИРОВКА (исправлена для вертикали!)
             opponent = 3 - player
             block_move = self.find_winning_move(board, opponent)
             if block_move:
                 return block_move
                 
-            # 3. БЛОКИРОВКА МНОЖЕСТВЕННЫХ УГРОЗ
-            critical_block = self.find_critical_block(board, player, opponent)
-            if critical_block:
-                return critical_block
-                
-            # 4. СОЗДАНИЕ УГРОЗ - ищем ходы, создающие две угрозы сразу
+            # 3. СОЗДАНИЕ ДВОЙНЫХ УГРОЗ - агрессия!
             threat_move = self.find_double_threat(board, player)
             if threat_move:
                 return threat_move
                 
-            # 5. БЛОКИРОВКА УГРОЗ ПРОТИВНИКА
+            # 4. БЛОКИРОВКА ДВОЙНЫХ УГРОЗ ПРОТИВНИКА
             counter_threat = self.find_double_threat(board, opponent)
             if counter_threat:
                 return counter_threat
                 
-            # 6. ТАКТИЧЕСКИЙ ХОД - улучшенный анализ
-            tactical_move = self.find_tactical_move(board, player)
+            # 5. БЫСТРЫЙ ТАКТИЧЕСКИЙ ХОД (упрощённый)
+            tactical_move = self.find_fast_tactical_move(board, player)
             if tactical_move:
                 return tactical_move
                 
-            # 7. СТРАТЕГИЧЕСКИЙ ХОД - контроль центра и высоты
+            # 6. СТРАТЕГИЧЕСКИЙ ХОД - контроль центра
             strategic_move = self.find_strategic_move(board, player)
             return strategic_move
             
         except Exception:
-            # ЭКСТРЕННЫЙ БЕЗОПАСНЫЙ ХОД
             return self.emergency_safe_move(board)
 
-    def find_critical_block(self, board: List[List[List[int]]], player: int, opponent: int) -> Optional[Tuple[int, int]]:
-        """Поиск критически важных блокировок (когда противник создаёт 2+ угрозы)"""
-        try:
-            for x in range(4):
-                for y in range(4):
-                    drop_z = self.get_drop_z(board, x, y)
-                    if drop_z is None:
-                        continue
-                        
-                    # Симулируем ход противника
-                    board[drop_z][y][x] = opponent
-                    
-                    # Проверяем, сколько угроз создаст противник
-                    threat_count = self.count_immediate_threats(board, opponent)
-                    
-                    board[drop_z][y][x] = 0  # откатываем
-                    
-                    # Если противник создаст 2+ угрозы - ОБЯЗАТЕЛЬНО блокируем!
-                    if threat_count >= 2:
-                        return (x, y)
-                        
-            return None
-        except Exception:
-            return None
-
     def find_winning_move(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
-        """Поиск немедленного выигрыша - ИСПРАВЛЕНО"""
+        """Быстрый поиск победы - проверяем только реальные позиции"""
         try:
             for x in range(4):
                 for y in range(4):
@@ -91,8 +60,8 @@ class MyAI(Alg3D):
                     # Пробуем ход
                     board[drop_z][y][x] = player
                     
-                    # Проверяем победу ВСЕМИ способами
-                    is_win = self.check_complete_win(board, x, y, drop_z, player)
+                    # Быстрая проверка победы от этой позиции
+                    is_win = self.check_fast_win(board, x, y, drop_z, player)
                     
                     board[drop_z][y][x] = 0  # откатываем
                     
@@ -103,51 +72,41 @@ class MyAI(Alg3D):
         except Exception:
             return None
 
-    def check_complete_win(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> bool:
-        """ПОЛНАЯ проверка победы по всем 13 направлениям"""
+    def check_fast_win(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> bool:
+        """БЫСТРАЯ проверка победы - только основные направления"""
         try:
-            # ВСЕ возможные направления в 3D
+            # Только самые важные направления для скорости
             directions = [
                 # Основные оси
-                (1, 0, 0),   # X
-                (0, 1, 0),   # Y  
-                (0, 0, 1),   # Z (вертикаль!)
+                [(1, 0, 0), (-1, 0, 0)],   # X
+                [(0, 1, 0), (0, -1, 0)],   # Y  
+                [(0, 0, 1), (0, 0, -1)],   # Z (вертикаль!)
                 
-                # Плоскостные диагонали
-                (1, 1, 0),   # XY диагональ
-                (1, -1, 0),  # XY обратная диагональ
-                (1, 0, 1),   # XZ диагональ
-                (1, 0, -1),  # XZ обратная диагональ
-                (0, 1, 1),   # YZ диагональ
-                (0, 1, -1),  # YZ обратная диагональ
+                # Главные диагонали
+                [(1, 1, 0), (-1, -1, 0)],   # XY
+                [(1, -1, 0), (-1, 1, 0)],   # XY обратная
+                [(1, 0, 1), (-1, 0, -1)],   # XZ
+                [(0, 1, 1), (0, -1, -1)],   # YZ
                 
-                # Пространственные диагонали
-                (1, 1, 1),   # Главная пространственная
-                (1, 1, -1),  # Пространственная 2
-                (1, -1, 1),  # Пространственная 3
-                (-1, 1, 1),  # Пространственная 4
+                # Пространственные (самые мощные)
+                [(1, 1, 1), (-1, -1, -1)],  # Главная
+                [(1, 1, -1), (-1, -1, 1)],  # Обратная 1
+                [(1, -1, 1), (-1, 1, -1)],  # Обратная 2
+                [(-1, 1, 1), (1, -1, -1)],  # Обратная 3
             ]
             
-            for dx, dy, dz in directions:
+            for dir_pair in directions:
                 count = 1  # текущая позиция
                 
-                # Проверяем в положительном направлении
-                nx, ny, nz = x + dx, y + dy, z + dz
-                while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                       board[nz][ny][nx] == player):
-                    count += 1
-                    nx += dx
-                    ny += dy
-                    nz += dz
-                
-                # Проверяем в отрицательном направлении
-                nx, ny, nz = x - dx, y - dy, z - dz
-                while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                       board[nz][ny][nx] == player):
-                    count += 1
-                    nx -= dx
-                    ny -= dy
-                    nz -= dz
+                # Проверяем в обе стороны
+                for dx, dy, dz in dir_pair:
+                    nx, ny, nz = x + dx, y + dy, z + dz
+                    while (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
+                           board[nz][ny][nx] == player):
+                        count += 1
+                        nx += dx
+                        ny += dy
+                        nz += dz
                 
                 if count >= 4:
                     return True
@@ -157,7 +116,7 @@ class MyAI(Alg3D):
             return False
 
     def find_double_threat(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
-        """Поиск хода, создающего две угрозы одновременно"""
+        """Быстрый поиск двойных угроз"""
         try:
             for x in range(4):
                 for y in range(4):
@@ -168,12 +127,11 @@ class MyAI(Alg3D):
                     # Пробуем ход
                     board[drop_z][y][x] = player
                     
-                    # Считаем угрозы после этого хода
-                    threat_count = self.count_immediate_threats(board, player)
+                    # Быстро считаем угрозы
+                    threat_count = self.count_fast_threats(board, player)
                     
-                    board[drop_z][y][x] = 0  # откатываем
+                    board[drop_z][y][x] = 0
                     
-                    # Если создаём 2+ угрозы - отличный ход!
                     if threat_count >= 2:
                         return (x, y)
                         
@@ -181,20 +139,19 @@ class MyAI(Alg3D):
         except Exception:
             return None
 
-    def count_immediate_threats(self, board: List[List[List[int]]], player: int) -> int:
-        """Подсчёт ВСЕХ немедленных угроз (3 в ряд + возможность поставить 4-ю)"""
+    def count_fast_threats(self, board: List[List[List[int]]], player: int) -> int:
+        """БЫСТРЫЙ подсчёт угроз - только критические линии"""
         threats = 0
         
         try:
-            # Проверяем ВСЕ возможные выигрышные линии
-            lines = self.get_all_winning_lines()
+            # Проверяем только самые важные линии для скорости
+            critical_lines = self.get_critical_lines()
             
-            for line in lines:
+            for line in critical_lines:
                 our_count = 0
-                empty_positions = []
+                empty_pos = None
                 blocked = False
                 
-                # Анализируем линию
                 for x, y, z in line:
                     if not (0 <= x < 4 and 0 <= y < 4 and 0 <= z < 4):
                         blocked = True
@@ -204,268 +161,200 @@ class MyAI(Alg3D):
                     if cell == player:
                         our_count += 1
                     elif cell == 0:
-                        empty_positions.append((x, y, z))
-                    else:  # противник
+                        if empty_pos is None:
+                            empty_pos = (x, y, z)
+                        else:
+                            # Больше одного пустого места - не угроза
+                            empty_pos = "multiple"
+                    else:
                         blocked = True
                         break
                 
-                # Угроза = 3 наших + 1 пустое место, которое мы можем заполнить
-                if not blocked and our_count == 3 and len(empty_positions) == 1:
-                    empty_x, empty_y, empty_z = empty_positions[0]
-                    expected_z = self.get_drop_z(board, empty_x, empty_y)
-                    # ИСПРАВЛЕНО: правильная проверка высоты
-                    if expected_z is not None and expected_z == empty_z:
+                # Быстрая проверка угрозы
+                if (not blocked and our_count == 3 and empty_pos and 
+                    empty_pos != "multiple"):
+                    ex, ey, ez = empty_pos
+                    expected_z = self.get_drop_z(board, ex, ey)
+                    if expected_z is not None and expected_z == ez:
                         threats += 1
                         
             return threats
         except Exception:
             return 0
 
-    def get_all_winning_lines(self) -> List[List[Tuple[int, int, int]]]:
-        """ВСЕ 76 выигрышных линий в 3D Connect 4"""
+    def get_critical_lines(self) -> List[List[Tuple[int, int, int]]]:
+        """Только критические линии для быстрого анализа"""
         lines = []
         
         try:
-            # 1. ВЕРТИКАЛЬНЫЕ ЛИНИИ (16 штук) - ИСПРАВЛЕНО!
+            # 1. Все вертикальные (16) - КРИТИЧНО!
             for x in range(4):
                 for y in range(4):
                     lines.append([(x, y, z) for z in range(4)])
             
-            # 2. ГОРИЗОНТАЛЬНЫЕ ПО X (16 штук)
+            # 2. Центральные горизонтальные
             for z in range(4):
-                for y in range(4):
+                # Центральные строки
+                for y in [1, 2]:
                     lines.append([(x, y, z) for x in range(4)])
-            
-            # 3. ГОРИЗОНТАЛЬНЫЕ ПО Y (16 штук)
-            for z in range(4):
-                for x in range(4):
+                # Центральные столбцы  
+                for x in [1, 2]:
                     lines.append([(x, y, z) for y in range(4)])
             
-            # 4. ДИАГОНАЛИ В ПЛОСКОСТЯХ XY (8 штук)
+            # 3. Главные диагонали в каждой плоскости
             for z in range(4):
-                # Главная диагональ
                 lines.append([(i, i, z) for i in range(4)])
-                # Побочная диагональ
                 lines.append([(i, 3-i, z) for i in range(4)])
             
-            # 5. ДИАГОНАЛИ В ПЛОСКОСТЯХ XZ (8 штук)
-            for y in range(4):
-                # Главная диагональ
-                lines.append([(i, y, i) for i in range(4)])
-                # Побочная диагональ
-                lines.append([(i, y, 3-i) for i in range(4)])
-            
-            # 6. ДИАГОНАЛИ В ПЛОСКОСТЯХ YZ (8 штук)
-            for x in range(4):
-                # Главная диагональ
-                lines.append([(x, i, i) for i in range(4)])
-                # Побочная диагональ
-                lines.append([(x, i, 3-i) for i in range(4)])
-            
-            # 7. ПРОСТРАНСТВЕННЫЕ ДИАГОНАЛИ (4 штуки)
-            lines.append([(i, i, i) for i in range(4)])           # (0,0,0) → (3,3,3)
-            lines.append([(i, i, 3-i) for i in range(4)])         # (0,0,3) → (3,3,0)
-            lines.append([(i, 3-i, i) for i in range(4)])         # (0,3,0) → (3,0,3)
-            lines.append([(3-i, i, i) for i in range(4)])         # (3,0,0) → (0,3,3)
+            # 4. Пространственные диагонали (самые мощные!)
+            lines.append([(i, i, i) for i in range(4)])
+            lines.append([(i, i, 3-i) for i in range(4)])
+            lines.append([(i, 3-i, i) for i in range(4)])
+            lines.append([(3-i, i, i) for i in range(4)])
             
         except Exception:
             pass
             
         return lines
 
-    def find_tactical_move(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
-        """Улучшенный тактический анализ"""
+    def find_fast_tactical_move(self, board: List[List[List[int]]], player: int) -> Optional[Tuple[int, int]]:
+        """Быстрый тактический анализ - только лучшие позиции"""
         try:
             best_move = None
             best_score = -9999
             opponent = 3 - player
             
-            for x in range(4):
-                for y in range(4):
-                    drop_z = self.get_drop_z(board, x, y)
-                    if drop_z is None:
-                        continue
-                        
-                    # Делаем ход
-                    board[drop_z][y][x] = player
+            # Проверяем только перспективные позиции
+            priority_positions = [
+                (1, 1), (2, 2), (1, 2), (2, 1),  # Центр
+                (0, 1), (1, 0), (3, 2), (2, 3),  # Околоцентр
+            ]
+            
+            for x, y in priority_positions:
+                drop_z = self.get_drop_z(board, x, y)
+                if drop_z is None:
+                    continue
                     
-                    # Улучшенная оценка позиции
-                    score = self.evaluate_advanced(board, player, opponent, x, y, drop_z)
-                    
-                    board[drop_z][y][x] = 0  # откатываем
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_move = (x, y)
+                # Делаем ход
+                board[drop_z][y][x] = player
+                
+                # Быстрая оценка
+                score = self.evaluate_fast(board, player, opponent, x, y, drop_z)
+                
+                board[drop_z][y][x] = 0
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (x, y)
+            
+            # Если не нашли среди приоритетных - берём любую
+            if best_move is None:
+                for x in range(4):
+                    for y in range(4):
+                        if self.get_drop_z(board, x, y) is not None:
+                            return (x, y)
                         
             return best_move
         except Exception:
             return None
 
-    def evaluate_advanced(self, board: List[List[List[int]]], player: int, opponent: int, x: int, y: int, z: int) -> int:
-        """Продвинутая оценка позиции"""
+    def evaluate_fast(self, board: List[List[List[int]]], player: int, opponent: int, x: int, y: int, z: int) -> int:
+        """Быстрая оценка - только главные факторы"""
         score = 0
         
         try:
-            # 1. Базовая оценка линий
-            score += self.evaluate_lines(board, player, opponent)
+            # 1. Позиционные бонусы (быстро)
+            center_bonus = 30 - int((abs(x - 1.5) + abs(y - 1.5)) * 8)
+            height_bonus = z * 5
+            score += center_bonus + height_bonus
             
-            # 2. Позиционные бонусы
-            score += self.get_position_value(x, y, z)
+            # 2. Простая проверка линий (только критические)
+            lines_score = self.evaluate_lines_fast(board, player, opponent, x, y, z)
+            score += lines_score
             
-            # 3. Связность (соседние фишки)
-            score += self.evaluate_connectivity(board, x, y, z, player) * 10
-            
-            # 4. Контроль центра (критично в 3D!)
-            center_control = self.evaluate_center_control(board, player, opponent)
-            score += center_control * 50
-            
-            # 5. Вертикальный контроль
-            vertical_control = self.evaluate_vertical_control(board, player, opponent)
-            score += vertical_control * 30
+            # 3. Связность (быстрая проверка соседей)
+            neighbors = 0
+            for dx, dy, dz in [(-1,0,0), (1,0,0), (0,-1,0), (0,1,0), (0,0,-1), (0,0,1)]:
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
+                    board[nz][ny][nx] == player):
+                    neighbors += 1
+            score += neighbors * 15
             
             return score
         except Exception:
             return 0
 
-    def evaluate_lines(self, board: List[List[List[int]]], player: int, opponent: int) -> int:
-        """Оценка всех линий"""
+    def evaluate_lines_fast(self, board: List[List[List[int]]], player: int, opponent: int, x: int, y: int, z: int) -> int:
+        """Быстрая оценка линий от конкретной позиции"""
         score = 0
         
         try:
-            lines = self.get_all_winning_lines()
+            directions = [
+                (1, 0, 0), (0, 1, 0), (0, 0, 1),     # Оси
+                (1, 1, 0), (1, -1, 0),                # Диагонали XY
+                (1, 1, 1), (1, 1, -1)                 # Пространственные
+            ]
             
-            for line in lines:
-                our_count = 0
+            for dx, dy, dz in directions:
+                # Считаем в обе стороны от позиции
+                our_count = 1  # текущая позиция
                 their_count = 0
-                empty_count = 0
                 
-                valid_line = True
-                for x, y, z in line:
-                    if not (0 <= x < 4 and 0 <= y < 4 and 0 <= z < 4):
-                        valid_line = False
+                # Положительное направление
+                for step in range(1, 4):
+                    nx, ny, nz = x + dx*step, y + dy*step, z + dz*step
+                    if not (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4):
                         break
-                        
-                    cell = board[z][y][x]
-                    if cell == player:
+                    if board[nz][ny][nx] == player:
                         our_count += 1
-                    elif cell == opponent:
+                    elif board[nz][ny][nx] == opponent:
                         their_count += 1
+                        break
                     else:
-                        empty_count += 1
+                        break
                 
-                if not valid_line or (our_count > 0 and their_count > 0):
-                    continue
+                # Отрицательное направление
+                for step in range(1, 4):
+                    nx, ny, nz = x - dx*step, y - dy*step, z - dz*step
+                    if not (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4):
+                        break
+                    if board[nz][ny][nx] == player:
+                        our_count += 1
+                    elif board[nz][ny][nx] == opponent:
+                        their_count += 1
+                        break
+                    else:
+                        break
                 
-                # Улучшенная система очков
-                if our_count == 3 and empty_count == 1:
-                    score += 1000  # Угроза победы
-                elif their_count == 3 and empty_count == 1:
-                    score -= 1000  # Угроза противника
-                elif our_count == 2 and empty_count == 2:
-                    score += 100   # Хорошая позиция
-                elif their_count == 2 and empty_count == 2:
-                    score -= 100   # Опасная позиция противника
-                elif our_count == 1 and empty_count == 3:
-                    score += 10
-                elif their_count == 1 and empty_count == 3:
-                    score -= 10
-                    
-            return score
-        except Exception:
-            return 0
-
-    def evaluate_connectivity(self, board: List[List[List[int]]], x: int, y: int, z: int, player: int) -> int:
-        """Оценка связности с соседними фишками"""
-        connectivity = 0
-        
-        try:
-            # Проверяем все 26 соседних позиций
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    for dz in [-1, 0, 1]:
-                        if dx == 0 and dy == 0 and dz == 0:
-                            continue
-                            
-                        nx, ny, nz = x + dx, y + dy, z + dz
-                        if (0 <= nx < 4 and 0 <= ny < 4 and 0 <= nz < 4 and 
-                            board[nz][ny][nx] == player):
-                            connectivity += 1
-                            
-            return connectivity
-        except Exception:
-            return 0
-
-    def evaluate_center_control(self, board: List[List[List[int]]], player: int, opponent: int) -> int:
-        """Оценка контроля центра"""
-        try:
-            center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
-            our_center = 0
-            their_center = 0
-            
-            for x, y in center_positions:
-                for z in range(4):
-                    if board[z][y][x] == player:
-                        our_center += (z + 1)  # Высота даёт бонус
-                    elif board[z][y][x] == opponent:
-                        their_center += (z + 1)
+                # Оценка линии
+                if their_count == 0:  # Не заблокировано
+                    if our_count >= 3:
+                        score += 500
+                    elif our_count == 2:
+                        score += 50
+                    else:
+                        score += 5
                         
-            return our_center - their_center
-        except Exception:
-            return 0
-
-    def evaluate_vertical_control(self, board: List[List[List[int]]], player: int, opponent: int) -> int:
-        """Оценка вертикального контроля"""
-        try:
-            our_vertical = 0
-            their_vertical = 0
-            
-            for x in range(4):
-                for y in range(4):
-                    column_height = self.get_column_height(board, x, y)
-                    if column_height > 0:
-                        top_player = board[column_height - 1][y][x]
-                        if top_player == player:
-                            our_vertical += column_height
-                        elif top_player == opponent:
-                            their_vertical += column_height
-                            
-            return our_vertical - their_vertical
-        except Exception:
-            return 0
-
-    def get_column_height(self, board: List[List[List[int]]], x: int, y: int) -> int:
-        """Высота столбца"""
-        try:
-            for z in range(4):
-                if board[z][y][x] == 0:
-                    return z
-            return 4
+            return score
         except Exception:
             return 0
 
     def find_strategic_move(self, board: List[List[List[int]]], player: int) -> Tuple[int, int]:
-        """Стратегический ход - УЛУЧШЕННЫЙ"""
+        """Быстрый стратегический ход"""
         try:
-            # Дебютная книга для первых ходов
+            # Дебютная книга (упрощённая)
             total_moves = sum(1 for x in range(4) for y in range(4) for z in range(4) if board[z][y][x] != 0)
             
-            if total_moves <= 2:
-                # Первые ходы - всегда центр!
-                center_moves = [(1, 1), (2, 2), (1, 2), (2, 1)]
-                for x, y in center_moves:
-                    if self.get_drop_z(board, x, y) is not None:
-                        return (x, y)
+            if total_moves <= 1:
+                return (1, 1)  # Всегда центр на первом ходу
             
-            # Приоритетные позиции (обновлённые)
+            # Быстрые приоритеты
             priorities = [
-                # Центр (максимальный приоритет)
-                (1, 1), (2, 2), (1, 2), (2, 1),
-                # Околоцентральные
-                (0, 1), (1, 0), (3, 2), (2, 3),
-                (0, 2), (2, 0), (3, 1), (1, 3),
-                # Края (меньший приоритет)
-                (0, 0), (3, 3), (0, 3), (3, 0)
+                (1, 1), (2, 2), (1, 2), (2, 1),  # Центр
+                (0, 1), (1, 0), (3, 2), (2, 3),  # Околоцентр
+                (0, 2), (2, 0), (3, 1), (1, 3),  # Второй круг
+                (0, 0), (3, 3), (0, 3), (3, 0)   # Углы
             ]
             
             for x, y in priorities:
@@ -476,30 +365,8 @@ class MyAI(Alg3D):
         except Exception:
             return self.emergency_safe_move(board)
 
-    def get_position_value(self, x: int, y: int, z: int) -> int:
-        """Позиционная ценность хода - УЛУЧШЕНА"""
-        try:
-            value = 0
-            
-            # Центр важнее краёв (квадратичная функция)
-            center_distance = abs(x - 1.5) + abs(y - 1.5)
-            center_bonus = int(50 - center_distance * center_distance * 5)
-            value += center_bonus
-            
-            # Высота даёт контроль (экспоненциальный рост)
-            height_bonus = int(10 * (1.5 ** z))
-            value += height_bonus
-            
-            # Углы менее ценны
-            if (x, y) in [(0, 0), (0, 3), (3, 0), (3, 3)]:
-                value -= 20
-                
-            return value
-        except Exception:
-            return 0
-
     def get_drop_z(self, board: List[List[List[int]]], x: int, y: int) -> Optional[int]:
-        """Находит Z координату, куда упадёт фишка"""
+        """Быстрое определение высоты падения"""
         try:
             if not (0 <= x < 4 and 0 <= y < 4):
                 return None
@@ -511,28 +378,21 @@ class MyAI(Alg3D):
             return None
 
     def emergency_safe_move(self, board: List[List[List[int]]]) -> Tuple[int, int]:
-        """Экстренный безопасный ход при любых ошибках"""
+        """Экстренный ход"""
         try:
-            safe_moves = [(1, 1), (2, 2), (1, 2), (2, 1), (0, 0), (1, 0), (0, 1), (3, 3)]
+            # Быстрые безопасные ходы
+            safe_moves = [(1, 1), (2, 2), (1, 2), (2, 1)]
             
             for x, y in safe_moves:
-                try:
-                    if 0 <= x < 4 and 0 <= y < 4:
-                        drop_z = self.get_drop_z(board, x, y)
-                        if drop_z is not None:
-                            return (x, y)
-                except:
-                    continue
+                if 0 <= x < 4 and 0 <= y < 4 and self.get_drop_z(board, x, y) is not None:
+                    return (x, y)
             
-            # Последний шанс - любой валидный ход
+            # Любой валидный ход
             for x in range(4):
                 for y in range(4):
-                    try:
-                        if self.get_drop_z(board, x, y) is not None:
-                            return (x, y)
-                    except:
-                        continue
+                    if self.get_drop_z(board, x, y) is not None:
+                        return (x, y)
                         
-            return (0, 0)  # Критический случай
+            return (0, 0)
         except Exception:
             return (0, 0)
