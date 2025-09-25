@@ -3,9 +3,18 @@ import random
 import time
 import math
 
-# Константы не изменились
+# Константы
 WIN_SCORE = 1000000000
-MAX_DEPTH = 4 # Мы можем позволить себе большую глубину, т.к. в начале не думаем
+MAX_DEPTH = 4 
+
+# fmt: off
+POSITION_WEIGHTS = [
+    [[2, 3, 3, 2], [3, 5, 5, 3], [3, 5, 5, 3], [2, 3, 3, 2]],
+    [[3, 4, 4, 3], [4, 6, 6, 4], [4, 6, 6, 4], [3, 4, 4, 3]],
+    [[3, 4, 4, 3], [4, 6, 6, 4], [4, 6, 6, 4], [3, 4, 4, 3]],
+    [[2, 3, 3, 2], [3, 5, 5, 3], [3, 5, 5, 3], [2, 3, 3, 2]],
+]
+# fmt: on
 
 class MyAI:
     def __init__(self):
@@ -25,73 +34,62 @@ class MyAI:
         self.player = player
         self.opponent = 2 if player == 1 else 1
 
-        # ### НОВАЯ УЛЬТИМАТИВНАЯ СТРАТЕГИЯ: БАЗА ДАННЫХ ДЕБЮТОВ ###
-        
-        # Считаем количество фишек на доске, чтобы определить стадию игры
         pieces_on_board = sum(1 for z in range(4) for y in range(4) for x in range(4) if board[z][y][x] != 0)
 
         # --- СТРАТЕГИЯ ЗА ИГРОКА 1 (ЧЁРНЫЕ): ФОРСИРОВАННАЯ ПОБЕДА ---
         if player == 1:
-            # Цель: захватить 4 центральные клетки на нижнем уровне (z=0)
             center_targets = [(1, 1), (1, 2), (2, 1), (2, 2)]
-            random.shuffle(center_targets) # Добавим немного случайности в порядок захвата
-
+            random.shuffle(center_targets)
             for move in center_targets:
-                # Если одна из целевых клеток на нижнем уровне свободна, немедленно занимаем её.
                 if board[0][move[1]][move[0]] == 0:
                     return move
         
         # --- СТРАТЕГИЯ ЗА ИГРОКА 2 (БЕЛЫЕ): ЛУЧШАЯ ЗАЩИТА ---
         if player == 2 and pieces_on_board < 8:
-            # Цель: помешать игроку 1 захватить центр.
-            # Мы занимаем центральные клетки, которые еще не заняты.
-            center_targets = [(1, 1), (2, 2), (1, 2), (2, 1)] # Приоритет на диагональные
-            
+            center_targets = [(1, 1), (2, 2), (1, 2), (2, 1)]
             for move in center_targets:
                 if board[0][move[1]][move[0]] == 0:
                     return move
-
-        # Если дебютная фаза окончена (центр занят) или мы отклонились от плана,
-        # включается наш старый добрый Minimax для поиска лучшего хода в середине игры.
 
         valid_moves = self._get_valid_moves(board)
         if not valid_moves: return (0, 0)
         if len(valid_moves) == 1: return valid_moves[0]
             
-        # Быстрая проверка на победу/блок, чтобы не запускать Minimax зря
         for move in valid_moves:
             z = self._get_z(board, move[0], move[1])
-            # Проверяем победный ход
+            if z == -1: continue
             board[z][move[1]][move[0]] = self.player
             if self._check_winner_at(board, move[0], move[1], z, self.player):
                 board[z][move[1]][move[0]] = 0; return move
             board[z][move[1]][move[0]] = 0
-            # Проверяем ход для блокировки оппонента
             board[z][move[1]][move[0]] = self.opponent
             if self._check_winner_at(board, move[0], move[1], z, self.opponent):
                 board[z][move[1]][move[0]] = 0; return move
             board[z][move[1]][move[0]] = 0
 
-        # Запуск Minimax, если нет очевидных ходов
         best_move, _ = self.minimax(board, MAX_DEPTH, -math.inf, math.inf, True, valid_moves)
         
         return best_move if best_move is not None else random.choice(valid_moves)
 
-    # Minimax и все остальные функции остаются такими же, как в "Threat Hunter" версии.
-    # Их задача - правильно играть в миттельшпиле, когда дебют окончен.
     def minimax(self, board, depth, alpha, beta, is_maximizing, valid_moves):
         if time.time() - self.start_time > self.time_limit: return None, 0
         winner = self._check_winner(board)
         if winner == self.player: return None, WIN_SCORE + depth
         if winner == self.opponent: return None, -WIN_SCORE - depth
+
+        # ### КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ###
         if not valid_moves: return None, 0
+        
         if depth == 0: return None, self._evaluate_board(board)
+        
         sorted_moves = sorted(valid_moves, key=lambda m: self._get_move_priority(board, m, is_maximizing), reverse=True)
         best_move = sorted_moves[0]
+
         if is_maximizing:
             max_eval = -math.inf
             for move in sorted_moves:
                 z = self._get_z(board, move[0], move[1])
+                if z == -1: continue
                 board[z][move[1]][move[0]] = self.player
                 _, current_eval = self.minimax(board, depth - 1, alpha, beta, False, self._get_valid_moves(board))
                 board[z][move[1]][move[0]] = 0
@@ -104,6 +102,7 @@ class MyAI:
             min_eval = math.inf
             for move in sorted_moves:
                 z = self._get_z(board, move[0], move[1])
+                if z == -1: continue
                 board[z][move[1]][move[0]] = self.opponent
                 _, current_eval = self.minimax(board, depth - 1, alpha, beta, True, self._get_valid_moves(board))
                 board[z][move[1]][move[0]] = 0
@@ -113,7 +112,6 @@ class MyAI:
                 if beta <= alpha: break
             return best_move, min_eval
 
-    # Используем оценочную функцию из версии "Threat Hunter"
     def _evaluate_board(self, board):
         my_threats = self.count_threats(board, self.player)
         opponent_threats = self.count_threats(board, self.opponent)
@@ -149,7 +147,6 @@ class MyAI:
                 potential_score += 200
         return potential_score
     
-    # ... Остальные функции без изменений ...
     def _get_move_priority(self, board, move, is_maximizing):
         player = self.player if is_maximizing else self.opponent; opponent = self.opponent if is_maximizing else self.player
         score = 0; z = self._get_z(board, move[0], move[1])
@@ -162,6 +159,7 @@ class MyAI:
         if self._check_winner_at(board, move[0], move[1], z, opponent): score = WIN_SCORE / 2
         board[z][move[1]][move[0]] = 0
         return score + POSITION_WEIGHTS[z][move[1]][move[0]]
+        
     def _check_winner_at(self, board, x, y, z, player):
         orientations = [[(i, y, z) for i in range(4)],[(x, i, z) for i in range(4)],[(x, y, i) for i in range(4)]]
         if x == y: orientations.append([(i, i, z) for i in range(4)])
