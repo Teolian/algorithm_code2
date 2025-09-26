@@ -16,7 +16,7 @@ def gen_lines():
     for x in range(4):
         for z in range(4):
             L.append([(x, i, z) for i in range(4)])
-    # По оси Z (для каждого x,y)
+    # По оси Z (для каждого x,y) - КРИТИЧЕСКИ ВАЖНЫЕ ВЕРТИКАЛЬНЫЕ ЛИНИИ
     for x in range(4):
         for y in range(4):
             L.append([(x, y, i) for i in range(4)])
@@ -32,7 +32,7 @@ def gen_lines():
     for x in range(4):
         L.append([(x, i, i) for i in range(4)])
         L.append([(x, i, 3 - i) for i in range(4)])
-    # 4 пространственные диагонали
+    # 4 пространственные диагонали - ОЧЕНЬ ОПАСНЫЕ
     L.append([(i, i, i) for i in range(4)])
     L.append([(i, i, 3 - i) for i in range(4)])
     L.append([(i, 3 - i, i) for i in range(4)])
@@ -82,8 +82,22 @@ def count_pieces(board: List[List[List[int]]]) -> int:
     return sum(1 for x in range(4) for y in range(4) for z in range(4) if board[z][y][x] != 0)
 
 
+def is_critical_line(line: List[Tuple[int, int, int]]) -> bool:
+    """Определяет критически важные линии."""
+    # Вертикальные линии (по Z) - очень опасны
+    if all(x == line[0][0] and y == line[0][1] for x, y, z in line):
+        return True
+    # Пространственные диагонали - крайне опасны  
+    if (line == [(0,0,0), (1,1,1), (2,2,2), (3,3,3)] or
+        line == [(0,0,3), (1,1,2), (2,2,1), (3,3,0)] or
+        line == [(0,3,0), (1,2,1), (2,1,2), (3,0,3)] or
+        line == [(3,0,0), (2,1,1), (1,2,2), (0,3,3)]):
+        return True
+    return False
+
+
 def eval_board(board: List[List[List[int]]], me: int) -> int:
-    """Стабильная оценочная функция."""
+    """Улучшенная оценочная функция с акцентом на опасные линии."""
     opp = 3 - me
     w = winner(board)
     if w == me:
@@ -107,7 +121,7 @@ def eval_board(board: List[List[List[int]]], me: int) -> int:
                 pos_score = cent * 2 + height
                 score += pos_score if p == me else -pos_score
 
-    # Анализ линий с простой логикой
+    # Анализ линий с повышенным вниманием к критическим
     for line in LINES:
         c0 = c1 = c2 = 0
         for (x, y, z) in line:
@@ -126,31 +140,33 @@ def eval_board(board: List[List[List[int]]], me: int) -> int:
         mine = c1 if me == 1 else c2
         theirs = c2 if me == 1 else c1
         
+        # Множитель для критических линий
+        multiplier = 3.0 if is_critical_line(line) else 1.0
+        
         if theirs == 0:
             if mine == 3:
-                score += 500
+                score += int(1000 * multiplier)
             elif mine == 2:
-                score += 50
+                score += int(100 * multiplier)
             elif mine == 1:
-                score += 5
+                score += int(10 * multiplier)
         elif mine == 0:
             if theirs == 3:
-                score -= 500
+                score -= int(1000 * multiplier)  # КРИТИЧНО - блокировать!
             elif theirs == 2:
-                score -= 50
+                score -= int(100 * multiplier)
             elif theirs == 1:
-                score -= 5
+                score -= int(10 * multiplier)
     
     return score
 
 
 class MyAI(Alg3D):
-    def __init__(self, depth: int = 3):  # Уменьшили глубину для стабильности
+    def __init__(self, depth: int = 3):
         self.depth = depth
 
     def _emergency_move(self, board: List[List[List[int]]]) -> Tuple[int, int]:
         """Максимально безопасный аварийный ход."""
-        # Простой порядок: центр -> края -> углы
         priority_moves = [
             (1, 1), (2, 2), (1, 2), (2, 1),
             (0, 1), (1, 0), (3, 2), (2, 3),
@@ -167,7 +183,6 @@ class MyAI(Alg3D):
             except:
                 continue
         
-        # Последний шанс - любой валидный ход
         for x in range(4):
             for y in range(4):
                 try:
@@ -176,7 +191,7 @@ class MyAI(Alg3D):
                 except:
                     continue
         
-        return (0, 0)  # Абсолютный fallback
+        return (0, 0)
 
     def _validate_move(self, board: List[List[List[int]]], x: int, y: int) -> Tuple[int, int]:
         """Строгая валидация хода."""
@@ -189,8 +204,9 @@ class MyAI(Alg3D):
         except:
             return self._emergency_move(board)
 
-    def _immediate_win(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
-        """Безопасный поиск немедленного выигрыша."""
+    def _find_all_wins(self, board: Board, player: int) -> List[Tuple[int, int]]:
+        """Найти все ходы для немедленной победы."""
+        wins = []
         try:
             for (x, y) in valid_moves(board):
                 try:
@@ -199,14 +215,53 @@ class MyAI(Alg3D):
                         continue
                     board[z][y][x] = player
                     if winner(board) == player:
-                        board[z][y][x] = 0
-                        return (x, y)
+                        wins.append((x, y))
                     board[z][y][x] = 0
                 except:
                     continue
         except:
             pass
-        return None
+        return wins
+
+    def _immediate_win(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        """Безопасный поиск немедленного выигрыша."""
+        wins = self._find_all_wins(board, player)
+        return wins[0] if wins else None
+
+    def _find_critical_blocks(self, board: Board, player: int) -> List[Tuple[int, int]]:
+        """Найти критические блокировки (3 в ряд противника)."""
+        opp = 3 - player
+        critical_blocks = []
+        
+        try:
+            for line in LINES:
+                # Подсчитываем фишки в линии
+                opp_count = 0
+                empty_positions = []
+                
+                for (x, y, z) in line:
+                    v = board[z][y][x]
+                    if v == opp:
+                        opp_count += 1
+                    elif v == 0:
+                        # Проверяем, можно ли сюда поставить фишку
+                        actual_z = drop_z(board, x, y)
+                        if actual_z == z:  # Фишка упадет именно сюда
+                            empty_positions.append((x, y))
+                
+                # Если у противника 3 в ряд и есть место для 4-й - КРИТИЧНО!
+                if opp_count == 3 and len(empty_positions) == 1:
+                    move = empty_positions[0]
+                    if move not in critical_blocks:
+                        # Дополнительный приоритет критическим линиям
+                        if is_critical_line(line):
+                            critical_blocks.insert(0, move)
+                        else:
+                            critical_blocks.append(move)
+        except:
+            pass
+        
+        return critical_blocks
 
     def _creates_fork(self, board: Board, player: int, x: int, y: int) -> bool:
         """Безопасная проверка форка."""
@@ -219,25 +274,13 @@ class MyAI(Alg3D):
             
             # Проверяем, не даем ли мы сопернику немедленную победу
             opp = 3 - player
-            opp_win = self._immediate_win(board, opp)
-            if opp_win is not None:
+            opp_wins = self._find_all_wins(board, opp)
+            if opp_wins:
                 board[z][y][x] = 0
                 return False
             
             # Считаем наши угрозы
-            my_wins = []
-            for (mx, my) in valid_moves(board):
-                try:
-                    mz = drop_z(board, mx, my)
-                    if mz is None:
-                        continue
-                    board[mz][my][mx] = player
-                    if winner(board) == player:
-                        my_wins.append((mx, my))
-                    board[mz][my][mx] = 0
-                except:
-                    continue
-            
+            my_wins = self._find_all_wins(board, player)
             board[z][y][x] = 0
             
             # Форк = минимум 2 разных способа выиграть
@@ -264,16 +307,18 @@ class MyAI(Alg3D):
             
             board[z][y][x] = player
             opp = 3 - player
-            safe = self._immediate_win(board, opp) is None
+            
+            # Проверяем, не дает ли ход сопернику немедленную победу
+            opp_wins = self._find_all_wins(board, opp)
             board[z][y][x] = 0
-            return safe
+            
+            return len(opp_wins) == 0
         except:
             return False
 
     def _minimax_search(self, board: Board, player: int, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
         """Ограниченный minimax поиск."""
         try:
-            # Проверка терминальных состояний
             w = winner(board)
             if w == player:
                 return 25000 - (self.depth - depth)
@@ -286,9 +331,8 @@ class MyAI(Alg3D):
             if not moves:
                 return eval_board(board, player)
             
-            # Ограничиваем количество рассматриваемых ходов для скорости
+            # Ограничиваем количество рассматриваемых ходов
             if len(moves) > 8:
-                # Сортируем по центральности
                 moves = sorted(moves, key=lambda m: abs(m[0] - 1.5) + abs(m[1] - 1.5))[:8]
             
             if maximizing:
@@ -335,7 +379,6 @@ class MyAI(Alg3D):
             return self._emergency_move(board)
         
         try:
-            # Сортируем кандидатов по центральности
             candidates = sorted(candidates, key=lambda m: abs(m[0] - 1.5) + abs(m[1] - 1.5))
             
             best_move = candidates[0]
@@ -366,9 +409,9 @@ class MyAI(Alg3D):
         player: int,
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
-        """Максимально стабильный главный метод."""
+        """Улучшенный главный метод с акцентом на критические угрозы."""
         try:
-            # 1. Дебютная логика - простые центральные ходы
+            # 1. Дебютная логика
             pieces = count_pieces(board)
             if pieces <= 2:
                 for move in [(1, 1), (2, 2), (1, 2), (2, 1)]:
@@ -378,47 +421,45 @@ class MyAI(Alg3D):
                     except:
                         continue
 
-            # 2. Немедленная победа
+            # 2. Немедленная победа - НАИВЫСШИЙ ПРИОРИТЕТ
             win_move = self._immediate_win(board, player)
             if win_move is not None:
                 return self._validate_move(board, *win_move)
 
             opp = 3 - player
 
-            # 3. Блокировка немедленной победы противника
+            # 3. КРИТИЧЕСКИЕ блокировки (3 в ряд противника) - ВТОРОЙ ПРИОРИТЕТ
+            critical_blocks = self._find_critical_blocks(board, player)
+            if critical_blocks:
+                # Берем первую критическую блокировку
+                return self._validate_move(board, *critical_blocks[0])
+
+            # 4. Обычная блокировка немедленной победы противника
             block_move = self._immediate_win(board, opp)
             if block_move is not None:
                 return self._validate_move(board, *block_move)
 
-            # 4. Попытка создать форк
+            # 5. Попытка создать форк
             fork_move = self._find_fork(board, player)
             if fork_move is not None:
                 return self._validate_move(board, *fork_move)
 
-            # 5. Блокировка форка противника
+            # 6. Блокировка форка противника
             opp_fork = self._find_fork(board, opp)
             if opp_fork is not None:
                 return self._validate_move(board, *opp_fork)
 
-            # 6. Выбор среди безопасных ходов
+            # 7. Выбор среди безопасных ходов
             all_moves = list(valid_moves(board))
             if not all_moves:
                 return self._emergency_move(board)
 
-            safe_moves = []
-            for move in all_moves:
-                try:
-                    if self._is_safe_move(board, player, *move):
-                        safe_moves.append(move)
-                except:
-                    continue
-
+            safe_moves = [move for move in all_moves if self._is_safe_move(board, player, *move)]
             candidates = safe_moves if safe_moves else all_moves
             
-            # 7. Поиск лучшего хода
+            # 8. Поиск лучшего хода
             best_move = self._get_best_move(board, player, candidates)
             return self._validate_move(board, *best_move)
 
-        except Exception as e:
-            # Абсолютный fallback при любой ошибке
+        except Exception:
             return self._emergency_move(board)
