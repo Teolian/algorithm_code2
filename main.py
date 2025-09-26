@@ -136,17 +136,17 @@ def eval_board(board: Board, me: int) -> int:
         if theirs == 0:
             # Только мои
             if mine == 3 and empty == 1:
-                score += 240
+                score += 260  # чуть подняли вес немедленных угроз
             elif mine == 2 and empty == 2:
-                score += 40
+                score += 44
             elif mine == 1 and empty == 3:
                 score += 4
         elif mine == 0:
             # Только их
             if theirs == 3 and empty == 1:
-                score -= 240
+                score -= 260
             elif theirs == 2 and empty == 2:
-                score -= 40
+                score -= 44
             elif theirs == 1 and empty == 3:
                 score -= 4
 
@@ -160,15 +160,18 @@ class MyAI(Alg3D):
     Улучшения:
       • TimeGuard (CPU + soft-wall)
       • Итеративное заглубление
-      • Zobrist-хэш + маленькая транспозиционная таблица (TT) с depth-aware записями
-      • Move ordering: PV-move из TT → killer-moves → центр-сначала
+      • Zobrist-хэш + транспозиционная таблица (TT) с depth-aware записями
+      • Move ordering: Win-first → Block-first → PV-move → killer-moves → центр-сначала
+      • PVS (Principal Variation Search) — нулевое окно для не-PV ветвей
+      • Аспирационные окна между итерациями
+      • Threat extension на горизонте (+1 ply при немедл. угрозе)
     """
     # TT-флаги
     TT_EXACT = 0
     TT_LOWER = 1
     TT_UPPER = -1
 
-    def __init__(self, depth: int = 3, tt_capacity: int = 200_000):
+    def __init__(self, depth: int = 4, tt_capacity: int = 200_000):
         # depth — максимальная глубина для итеративного заглубления (1..depth)
         self.depth = depth
 
@@ -184,6 +187,9 @@ class MyAI(Alg3D):
 
         # killer moves (на глубины 0..31 храним по 2 убийцы)
         self.killers: List[List[Optional[Tuple[int, int]]]] = [[None, None] for _ in range(32)]
+
+        # последнее оценённое значение на предыдущей итерации (для аспирационных окон)
+        self._last_root_score: Optional[int] = None
 
     # ---------- Лимитер времени (CPU + мягкий по wall) ----------
 
@@ -242,16 +248,17 @@ class MyAI(Alg3D):
         if len(self.tt) >= self.tt_capacity:
             # простое вытеснение: псевдослучайный ключ
             victim = self._mulberry32(key)  # 32-бит
-            # преобразуем в индекс по модулю размера, затем получаем произвольный ключ через итерацию
             idx = victim % (len(self.tt) or 1)
-            # удалить любой элемент на позиции idx (O(n), но размер небольшой)
             k = next(iter(self.tt))
-            for i, kk in enumerate(self.tt.keys()):
+            for i, kk in enumerate(list(self.tt.keys())):
                 if i == idx:
                     k = kk
                     break
             self.tt.pop(k, None)
-        self.tt[key] = (depth, flag, value, best_move)
+        # Политика замены: если запись глубже — замещаем, иначе оставляем
+        prev = self.tt.get(key)
+        if (prev is None) or (depth >= prev[0]):
+            self.tt[key] = (depth, flag, value, best_move)
 
     def _tt_probe(self, key: int):
         return self.tt.get(key, None)
@@ -282,9 +289,10 @@ class MyAI(Alg3D):
     def get_winning_lines(self):
         return LINES
 
-    # ---------- Примитивы (так же, как раньше) ----------
+    # ---------- Примитивы ----------
 
     def _immediate_win(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        """Есть ли ход, который выигрывает сразу."""
         for (x, y) in valid_moves(board):
             z = drop_z(board, x, y)
             if z is None:
@@ -295,6 +303,22 @@ class MyAI(Alg3D):
             if won:
                 return (x, y)
         return None
+
+    def _immediate_block_moves(self, board: Board, player: int) -> List[Tuple[int, int]]:
+        """Все ходы, блокирующие немедленный выигрыш соперника."""
+        opp = 3 - player
+        blocks: List[Tuple[int, int]] = []
+        for (x, y) in valid_moves(board):
+            z = drop_z(board, x, y)
+            if z is None:
+                continue
+            board[z][y][x] = player
+            # если после нашего хода у соперника уже нет немедленного выигрыша — это блок
+            lose_now = self._immediate_win(board, opp)
+            board[z][y][x] = 0
+            if lose_now is None:
+                blocks.append((x, y))
+        return blocks
 
     def _my_immediate_wins_in_position(self, board: Board, player: int) -> List[Tuple[int, int]]:
         wins: List[Tuple[int, int]] = []
@@ -309,12 +333,14 @@ class MyAI(Alg3D):
         return wins
 
     def _creates_fork(self, board: Board, player: int, x: int, y: int) -> bool:
+        """Проверить, создаёт ли ход (x,y) форк — ≥2 независимых немедленных выигрыша."""
         z = drop_z(board, x, y)
         if z is None:
             return False
         board[z][y][x] = player
 
         opp = 3 - player
+        # Если даём немедленный выигрыш сопернику — это не форк для нас
         opp_win = self._immediate_win(board, opp)
         if opp_win is not None:
             board[z][y][x] = 0
@@ -335,6 +361,7 @@ class MyAI(Alg3D):
         return None
 
     def _find_block_opp_fork(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        """Если у соперника есть форк-ход, попробуем его заблокировать или контрфоркнуть."""
         opp = 3 - player
         opp_forks: List[Tuple[int, int]] = []
         for (x, y) in valid_moves(board):
@@ -362,6 +389,7 @@ class MyAI(Alg3D):
         return opp_forks[0]
 
     def _is_safe(self, board: Board, player: int, x: int, y: int) -> bool:
+        """После нашего хода соперник не получает немедленную победу."""
         opp = 3 - player
         z = drop_z(board, x, y)
         if z is None:
@@ -389,35 +417,70 @@ class MyAI(Alg3D):
             arr[1] = arr[0]
             arr[0] = mv
 
-    # ---------- Alpha-Beta + TT + TimeGuard ----------
+    # ---------- Порядок ходов ----------
 
     def _order_moves(
         self,
+        board: Board,
+        player: int,
         candidates: List[Tuple[int, int]],
         tt_move: Optional[Tuple[int, int]],
         depth_idx: int,
     ) -> List[Tuple[int, int]]:
-        # Начинаем с PV-move (из TT), затем killer-moves для этой глубины,
-        # потом оставшиеся по центр-сначала.
+        """Win-first → Block-first → PV → killers → центр."""
+        opp = 3 - player
         killers_here = [mv for mv in self.killers[depth_idx] if mv is not None]
         base = list(candidates)
 
         def center_key(m):
             return (abs(m[0] - 1.5) + abs(m[1] - 1.5))
 
+        # Предвычислим «win» и «block»
+        win_moves: List[Tuple[int, int]] = []
+        block_moves: List[Tuple[int, int]] = []
+        others: List[Tuple[int, int]] = []
+        for m in base:
+            x, y = m
+            z = drop_z(board, x, y)
+            if z is None:
+                continue
+            board[z][y][x] = player
+            if winner(board) == player:
+                win_moves.append(m)
+                board[z][y][x] = 0
+                continue
+            # блок: после нашего хода у opp нет немедленного выигрыша
+            if self._immediate_win(board, opp) is None:
+                block_moves.append(m)
+            else:
+                others.append(m)
+            board[z][y][x] = 0
+
         seen = set()
         ordered: List[Tuple[int, int]] = []
-        if tt_move and tt_move in base:
-            ordered.append(tt_move)
-            seen.add(tt_move)
+
+        for m in win_moves:
+            if m not in seen:
+                ordered.append(m); seen.add(m)
+
+        for m in block_moves:
+            if m not in seen:
+                ordered.append(m); seen.add(m)
+
+        if tt_move and (tt_move in base) and (tt_move not in seen):
+            ordered.append(tt_move); seen.add(tt_move)
+
         for km in killers_here:
             if km in base and km not in seen:
-                ordered.append(km)
-                seen.add(km)
+                ordered.append(km); seen.add(km)
+
         rest = [m for m in base if m not in seen]
         rest.sort(key=center_key)
         ordered.extend(rest)
+
         return ordered
+
+    # ---------- Alpha-Beta + PVS + TT + Threat-Extension ----------
 
     def _alpha_beta_best_depth(
         self,
@@ -426,7 +489,13 @@ class MyAI(Alg3D):
         candidates: List[Tuple[int, int]],
         depth: int,
         tg: "_TimeGuard",
-    ) -> Tuple[int, int]:
+        alpha_init: int = -10**9,
+        beta_init: int = 10**9,
+    ) -> Tuple[int, int, int]:
+        """
+        Возвращает (best_x, best_y, best_score) на заданной глубине.
+        PVS: первый ребёнок полным окном, остальные нулевым (a,a+1) + при улучшении — ресерч.
+        """
         opp = 3 - player
 
         # текущий корневой хэш
@@ -439,9 +508,9 @@ class MyAI(Alg3D):
         best = candidates[0]
         bestv = -10**9
 
-        ordered = self._order_moves(candidates, tt_move, depth_idx=0)
+        ordered = self._order_moves(board, player, candidates, tt_move, depth_idx=0)
 
-        def ab(pl: int, d: int, a: int, b: int, key: int, depth_idx: int) -> int:
+        def ab(pl: int, d: int, a: int, b: int, key: int, depth_idx: int, pv_node: bool) -> int:
             if tg.should_stop():
                 return eval_board(board, player)
 
@@ -450,8 +519,17 @@ class MyAI(Alg3D):
                 return 10_000 - max(0, d)
             if w == opp:
                 return -10_000 + max(0, d)
+
+            # Threat extension / quiescence trigger на горизонте
             if d == 0 or board_full(board):
-                return eval_board(board, player)
+                # если на горизонте есть немедленная победа (нашей или их стороны) — продлим на 1 ply
+                if d == 0:
+                    if (self._immediate_win(board, player) is not None) or (self._immediate_win(board, opp) is not None):
+                        d = 1  # продлеваем на один плей
+                    else:
+                        return eval_board(board, player)
+                else:
+                    return eval_board(board, player)
 
             # TT probe
             entry = self._tt_probe(key)
@@ -467,18 +545,18 @@ class MyAI(Alg3D):
                     if a >= b:
                         return evalue
 
-            # упорядочим ходы с учётом TT/killers
+            # упорядочим ходы с учётом TT/killers/выигрышей/блоков
             local_tt_move = entry[3] if entry is not None else None
             moves = list(valid_moves(board))
             if not moves:
-                return eval_board(board, player)  # ничья/пат
+                return eval_board(board, player)  # ничья
 
-            moves = self._order_moves(moves, local_tt_move, depth_idx)
+            moves = self._order_moves(board, pl, moves, local_tt_move, depth_idx)
 
             best_local_val = -10**9 if pl == player else 10**9
             best_local_move: Optional[Tuple[int, int]] = None
-            cut = False
 
+            first = True
             for (x, y) in moves:
                 if tg.should_stop():
                     break
@@ -486,52 +564,56 @@ class MyAI(Alg3D):
                 if z is None:
                     continue
 
-                # применяем ход
                 board[z][y][x] = pl
-
-                # инкрементальный хэш: XOR с ключом фигуры и смена стороны
                 new_key = key ^ self._piece_key[z][y][x][pl - 1] ^ self._stm_key  # type: ignore
 
+                if first or pv_node:
+                    # полный поиск для первого ребёнка (PV full window) или если мы уже в PV
+                    val = ab(3 - pl, d - 1, a, b, new_key, depth_idx + 1, pv_node=True)
+                    first = False
+                else:
+                    # PVS: null-window
+                    val = ab(3 - pl, d - 1, a, a + 1, new_key, depth_idx + 1, pv_node=False)
+                    if a < val < b:
+                        # ресерч полным окном
+                        val = ab(3 - pl, d - 1, a, b, new_key, depth_idx + 1, pv_node=True)
+
+                board[z][y][x] = 0
+
                 if pl == player:
-                    val = ab(3 - pl, d - 1, a, b, new_key, depth_idx + 1)
-                    board[z][y][x] = 0
                     if val > best_local_val:
                         best_local_val = val
                         best_local_move = (x, y)
-                    a = max(a, val)
+                    if val > a:
+                        a = val
                     if a >= b:
-                        # beta-cutoff → killer
                         if best_local_move is not None:
                             self._push_killer(depth_idx, best_local_move)
-                        cut = True
                         break
                 else:
-                    val = ab(3 - pl, d - 1, a, b, new_key, depth_idx + 1)
-                    board[z][y][x] = 0
                     if val < best_local_val:
                         best_local_val = val
                         best_local_move = (x, y)
-                    b = min(b, val)
+                    if val < b:
+                        b = val
                     if a >= b:
-                        # beta-cutoff на ветке соперника тоже даёт killer (наш последний удачный ход)
                         if best_local_move is not None:
                             self._push_killer(depth_idx, best_local_move)
-                        cut = True
                         break
 
             # сохранить в TT
             if not tg.should_stop():
                 flag = MyAI.TT_EXACT
                 if best_local_val <= a:
-                    # верхняя граница (в классике: если значение <= alpha до обновления alpha)
                     flag = MyAI.TT_UPPER
                 if best_local_val >= b:
-                    # нижняя граница (если значение >= beta)
                     flag = MyAI.TT_LOWER
                 self._tt_store(key, d, flag, best_local_val, best_local_move)
 
             return best_local_val
 
+        a, b = alpha_init, beta_init
+        first = True
         for (x, y) in ordered:
             if tg.should_stop():
                 break
@@ -540,16 +622,26 @@ class MyAI(Alg3D):
                 continue
             board[z][y][x] = player
             child_key = root_key ^ self._piece_key[z][y][x][player - 1] ^ self._stm_key  # type: ignore
-            v = ab(opp, depth - 1, -10**9, 10**9, child_key, 1)
+
+            if first:
+                v = ab(3 - player, depth - 1, a, b, child_key, 1, pv_node=True)
+                first = False
+            else:
+                # PVS на корне: сначала узкое окно
+                v = ab(3 - player, depth - 1, a, a + 1, child_key, 1, pv_node=False)
+                if a < v < b:
+                    v = ab(3 - player, depth - 1, a, b, child_key, 1, pv_node=True)
+
             board[z][y][x] = 0
             if v > bestv:
                 bestv, best = v, (x, y)
+            if v > a:
+                a = v
 
-        # Корневую запись тоже можно положить (для PV-move на следующий шаг)
         if not tg.should_stop():
             self._tt_store(root_key, depth, MyAI.TT_EXACT, bestv, best)
 
-        return best
+        return best[0], best[1], bestv
 
     def _alpha_beta_best_id(
         self,
@@ -559,16 +651,34 @@ class MyAI(Alg3D):
         max_depth: int,
         tg: "_TimeGuard",
     ) -> Tuple[int, int]:
-        """Итеративное заглубление: 1..max_depth. Возвращаем лучший-so-far."""
-        best_so_far = candidates[0]
+        """Итеративное заглубление: 1..max_depth. Возвращаем лучший-so-far c аспирационными окнами."""
+        best_xy = candidates[0]
+        score_guess = self._last_root_score if self._last_root_score is not None else 0
+
         # сбрасываем killers для свежего поиска
         self.killers = [[None, None] for _ in range(32)]
-        # небольшой прогрев TT корнем
+
         for d in range(1, max_depth + 1):
             if tg.should_stop():
                 break
-            best_so_far = self._alpha_beta_best_depth(board, player, candidates, d, tg)
-        return best_so_far
+
+            # аспирационное окно вокруг предыдущего скoра
+            window = 100  # узкое окно; при фейле расширим
+            alpha = score_guess - window
+            beta = score_guess + window
+
+            x, y, val = self._alpha_beta_best_depth(board, player, candidates, d, tg, alpha_init=alpha, beta_init=beta)
+
+            # если вышли за окно — повтор со стандартным окном
+            if not tg.should_stop() and (val <= alpha or val >= beta):
+                x, y, val = self._alpha_beta_best_depth(board, player, candidates, d, tg)
+
+            if not tg.should_stop():
+                best_xy = (x, y)
+                score_guess = val
+                self._last_root_score = val
+
+        return best_xy
 
     # ------------------------ Главная точка входа ------------------------
 
@@ -579,7 +689,7 @@ class MyAI(Alg3D):
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
         """
-        Приоритет: win → block → собственный fork → блок opp-fork → safe → alpha-beta(ID+TT) → fallback.
+        Приоритет: win → block → собственный fork → блок opp-fork → safe → alpha-beta(ID+PVS+TT) → fallback.
         Все вычисления под защитой TimeGuard (CPU ~9.5s).
         """
         try:
@@ -622,7 +732,7 @@ class MyAI(Alg3D):
             if not cands:
                 return (0, 0)
 
-            # 6) Итеративное заглубление + TT
+            # 6) Итеративное заглубление + PVS + TT + Threat-Extension
             x, y = self._alpha_beta_best_id(board, player, cands, self.depth, tg)
             return self._validate_move(board, x, y)
 
