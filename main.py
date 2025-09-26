@@ -1,4 +1,4 @@
-# main.py — 4x4x4 Connect Four AI (gravity) with Iterative Deepening + Transposition Table
+# main.py — 4x4x4 Connect Four (gravity) AI for contest runner
 # stdlib only
 
 from typing import List, Tuple, Optional, Dict
@@ -10,7 +10,7 @@ Coord = Tuple[int, int, int]
 Move  = Tuple[int, int]
 
 # ---------------------------------------------------------------------
-# Winning lines (complete set for 4x4x4)
+# Lines (complete set for 4x4x4)
 # ---------------------------------------------------------------------
 def _generate_winning_lines() -> List[List[Coord]]:
     L: List[List[Coord]] = []
@@ -51,6 +51,15 @@ CENTER_PREF: List[Move] = [
     (2, 0), (2, 3), (0, 2), (3, 2),
     (0, 0), (3, 0), (0, 3), (3, 3),
 ]
+
+# ---------------------------------------------------------------------
+# Utils: tuple->list for immutable boards from runner
+# ---------------------------------------------------------------------
+def to_mutable_board(board):
+    """Convert nested tuple board[z][y][x] to mutable lists, if needed."""
+    if isinstance(board, list):
+        return board
+    return [ [ list(row) for row in layer ] for layer in board ]
 
 # ---------------------------------------------------------------------
 # Board helpers (gravity: board[z][y][x], z grows upward)
@@ -163,12 +172,10 @@ def creates_fork(board: Board, player: int, x: int, y: int) -> bool:
     return False
 
 def find_own_fork(board: Board, player: int) -> Optional[Move]:
-    best = None
     for (x, y) in valid_moves(board):
         if creates_fork(board, player, x, y):
-            best = (x, y)
-            break
-    return best
+            return (x, y)
+    return None
 
 def find_block_opp_fork(board: Board, player: int) -> Optional[Move]:
     """Try to refute opponent's fork by: win now > own fork > direct block > interference."""
@@ -247,74 +254,87 @@ TTEntry = Tuple[int, int, int, Optional[Move]]  # (depth, value, flag, best_move
 
 class AI:
     def __init__(self):
-        self.soft_time_limit = 2.35  # keep below arena/server per-move CPU (~3s)
+        self.soft_time_limit = 2.35  # keep below server CPU limit per move (~3s)
         self.start_ts = 0.0
         self.tt: Dict[Tuple[Tuple[int, ...], int], TTEntry] = {}
-        self.last_pv_move: Optional[Move] = None  # for move ordering between depths
+        self.last_pv_move: Optional[Move] = None
 
+    # -------- time ----------
     def time_up(self) -> bool:
         return (time.time() - self.start_ts) > self.soft_time_limit
 
-    def get_move(self, board: Board, player: int, last_move) -> Tuple[int, int]:
-        self.start_ts = time.time()
-        self.last_pv_move = None
+    # -------- public ----------
+    def get_move(self, board, player: int, last_move) -> Tuple[int, int]:
+        try:
+            # важная защита от неизменяемых структур на боевом раннере
+            board = to_mutable_board(board)
 
-        # 0) opening micro-book
-        empty = True
+            self.start_ts = time.time()
+            self.last_pv_move = None
+
+            # Opening: if empty board, take center-ish
+            if self._is_empty(board):
+                for m in [(1,1),(2,2),(1,2),(2,1)]:
+                    if drop_height(board, *m) is not None:
+                        return m
+
+            # Immediate tactics
+            m = find_win_in_one(board, player)
+            if m:
+                return m
+            opp = 3 - player
+            m = find_win_in_one(board, opp)
+            if m:
+                return m
+
+            # Forks
+            m = find_own_fork(board, player)
+            if m:
+                return m
+            m = find_block_opp_fork(board, player)
+            if m:
+                return m
+
+            # Safe candidates first
+            safe = [(x, y) for (x, y) in valid_moves(board) if is_safe_move(board, player, x, y)]
+            candidates = safe if safe else list(valid_moves(board))
+            if not candidates:
+                return (0, 0)
+
+            # Iterative deepening + TT
+            best_move = candidates[0]
+            best_score = -10**9
+            order = self._order_moves(board, player, candidates)
+            depth = 2
+            while depth <= 8:
+                if self.time_up():
+                    break
+                mv, sc = self._search_root(board, player, order, depth)
+                if mv is not None:
+                    best_move, best_score = mv, sc
+                    self.last_pv_move = mv
+                    order = self._order_moves(board, player, candidates, pv=mv)
+                depth += 1
+
+            return best_move
+
+        except Exception:
+            # абсолютный фолбек — чтобы не было 異常終了
+            for y in range(4):
+                for x in range(4):
+                    if drop_height(board, x, y) is not None:
+                        return (x, y)
+            return (0, 0)
+
+    # -------- helpers ----------
+    def _is_empty(self, board: Board) -> bool:
         for z in range(4):
             for y in range(4):
                 for x in range(4):
                     if board[z][y][x] != 0:
-                        empty = False; break
-                if not empty: break
-            if not empty: break
-        if empty:
-            for m in [(1,1),(2,2),(1,2),(2,1)]:
-                if drop_height(board, *m) is not None:
-                    return m
+                        return False
+        return True
 
-        # 1) Win in 1
-        m = find_win_in_one(board, player)
-        if m:
-            return m
-        # 2) Block opponent's win in 1
-        opp = 3 - player
-        m = find_win_in_one(board, opp)
-        if m:
-            return m
-        # 3) Own fork
-        m = find_own_fork(board, player)
-        if m:
-            return m
-        # 4) Block opponent fork
-        m = find_block_opp_fork(board, player)
-        if m:
-            return m
-
-        # 5) safe candidates first
-        safe = [(x, y) for (x, y) in valid_moves(board) if is_safe_move(board, player, x, y)]
-        candidates = safe if safe else list(valid_moves(board))
-        if not candidates:
-            return (0, 0)
-
-        # Iterative deepening with TT and aspiration ordering
-        best_move = candidates[0]
-        best_score = -10**9
-        order = self._order_moves(board, player, candidates)
-        depth = 2
-        while depth <= 8:  # depth cap
-            if self.time_up():
-                break
-            mv, sc = self._search_root(board, player, order, depth)
-            if mv is not None:
-                best_move, best_score = mv, sc
-                self.last_pv_move = mv
-                # reorder: principal variation first
-                order = self._order_moves(board, player, candidates, pv=mv)
-            depth += 1
-        return best_move
-
-    # ---------------- search internals ----------------
     def _order_moves(self, board: Board, player: int, moves: List[Move], pv: Optional[Move]=None) -> List[Move]:
         ordered = moves[:]
         # PV to front if provided
@@ -329,6 +349,7 @@ class AI:
         ordered.sort(key=key)
         return ordered
 
+    # -------- search ----------
     def _search_root(self, board: Board, player: int, moves: List[Move], depth: int):
         alpha = -10**9
         beta  =  10**9
@@ -381,10 +402,12 @@ class AI:
         else:
             tt_move = None
 
+        orig_alpha, orig_beta = alpha, beta
+
         best = -10**9
         best_move = None
         moves = list(valid_moves(board))
-        # PV / TT move ordering
+        # PV/TT move ordering
         if tt_move and tt_move in moves:
             moves.remove(tt_move)
             moves = [tt_move] + moves
@@ -410,18 +433,13 @@ class AI:
                 break
 
         # store to TT
-        flag = 0  # EXACT
-        if best <= alpha:  # after loop alpha may equal best; we need original bounds logic
-            pass
-        # recompute flag using original alpha/beta is tricky; approximate:
-        if best <= -10**9//2:
+        if best <= -10**9 // 2:
             val = evaluate(board, me)
         else:
             val = best
-        # set bound type
-        if val <= alpha:
+        if val <= orig_alpha:
             tt_flag = 2  # UPPERBOUND
-        elif val >= beta:
+        elif val >= orig_beta:
             tt_flag = 1  # LOWERBOUND
         else:
             tt_flag = 0  # EXACT
