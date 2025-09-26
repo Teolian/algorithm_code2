@@ -136,9 +136,9 @@ def eval_board(board: Board, me: int) -> int:
         if theirs == 0:
             # Только мои
             if mine == 3 and empty == 1:
-                score += 260   # ↑ было 240
+                score += 260
             elif mine == 2 and empty == 2:
-                score += 44    # ↑ было 40
+                score += 44
             elif mine == 1 and empty == 3:
                 score += 4
         elif mine == 0:
@@ -161,8 +161,9 @@ class MyAI(Alg3D):
       • TimeGuard (CPU + soft-wall)
       • Итеративное заглубление
       • Zobrist-хэш + маленькая транспозиционная таблица (TT)
-      • Move ordering: PV-move из TT → killer-moves → центр-сначала
+      • Move ordering: PV (из TT) → killer-moves → history → центр
       • Лёгкий LMR для поздних нетактических ходов (с проверкой)
+      • History Heuristic: накапливаем полезность ходов и используем в сортировке
     """
     # TT-флаги
     TT_EXACT = 0
@@ -185,6 +186,10 @@ class MyAI(Alg3D):
 
         # killer moves (на глубины 0..31 храним по 2 убийцы)
         self.killers: List[List[Optional[Tuple[int, int]]]] = [[None, None] for _ in range(32)]
+
+        # --- History Heuristic: scores[side-1][y][x]
+        self.history = [[[0 for _ in range(4)] for _ in range(4)] for _ in range(2)]
+        self._history_epoch = 0  # для мягкого затухания
 
     # ---------- Лимитер времени (CPU + мягкий по wall) ----------
 
@@ -254,6 +259,25 @@ class MyAI(Alg3D):
 
     def _tt_probe(self, key: int):
         return self.tt.get(key, None)
+
+    # ---------- History Heuristic helpers ----------
+
+    def _history_bonus(self, side: int, x: int, y: int, depth_left: int):
+        """Увеличиваем вес хода, когда он приводит к бета-отсечению (успешный)."""
+        try:
+            inc = depth_left * depth_left  # классика: d^2
+            self.history[side - 1][y][x] += inc
+        except Exception:
+            pass
+
+    def _history_decay(self):
+        """Периодическое мягкое затухание, чтобы таблица не раздувалась и не «закисала»."""
+        self._history_epoch += 1
+        if (self._history_epoch % 256) == 0:
+            for s in range(2):
+                for y in range(4):
+                    for x in range(4):
+                        self.history[s][y][x] >>= 1  # делим на 2
 
     # ---------- Безопасные помощники ----------
 
@@ -388,21 +412,23 @@ class MyAI(Alg3D):
             arr[1] = arr[0]
             arr[0] = mv
 
-    # ---------- Alpha-Beta + TT + TimeGuard + лёгкий LMR ----------
+    # ---------- Alpha-Beta + TT + TimeGuard + LMR + History ----------
 
     def _order_moves(
         self,
+        player: int,
         candidates: List[Tuple[int, int]],
         tt_move: Optional[Tuple[int, int]],
         depth_idx: int,
     ) -> List[Tuple[int, int]]:
-        # PV (из TT) → killers → центр
+        # Порядок: PV (из TT) → killers → history (убывание) → центр
         killers_here = [mv for mv in self.killers[depth_idx] if mv is not None]
         base = list(candidates)
 
         def center_key(m):
             return (abs(m[0] - 1.5) + abs(m[1] - 1.5))
 
+        # начальный список без дублей
         seen = set()
         ordered: List[Tuple[int, int]] = []
         if tt_move and tt_move in base:
@@ -410,8 +436,11 @@ class MyAI(Alg3D):
         for km in killers_here:
             if km in base and km not in seen:
                 ordered.append(km); seen.add(km)
+
+        # оставшиеся — сортируем по history, затем по близости к центру
         rest = [m for m in base if m not in seen]
-        rest.sort(key=center_key)
+        side_idx = player - 1
+        rest.sort(key=lambda m: (-self.history[side_idx][m[1]][m[0]], center_key(m)))
         ordered.extend(rest)
         return ordered
 
@@ -435,7 +464,7 @@ class MyAI(Alg3D):
         best = candidates[0]
         bestv = -10**9
 
-        ordered = self._order_moves(candidates, tt_move, depth_idx=0)
+        ordered = self._order_moves(player, candidates, tt_move, depth_idx=0)
 
         def ab(pl: int, d: int, a: int, b: int, key: int, depth_idx: int) -> int:
             if tg.should_stop():
@@ -463,13 +492,13 @@ class MyAI(Alg3D):
                     if a >= b:
                         return evalue
 
-            # упорядочим ходы с учётом TT/killers
+            # упорядочим ходы с учётом TT/killers/history
             local_tt_move = entry[3] if entry is not None else None
             moves = list(valid_moves(board))
             if not moves:
                 return eval_board(board, player)  # ничья/пат
 
-            moves = self._order_moves(moves, local_tt_move, depth_idx)
+            moves = self._order_moves(pl, moves, local_tt_move, depth_idx)
 
             best_local_val = -10**9 if pl == player else 10**9
             best_local_move: Optional[Tuple[int, int]] = None
@@ -501,14 +530,8 @@ class MyAI(Alg3D):
                 else:
                     # уменьшенная глубина
                     val = ab(3 - pl, d - 2, a, b, new_key, depth_idx + 1)
-                    # проверочный ресерч, если ход выглядит важным
-                    need_full = False
-                    if pl == player:
-                        if val > a:
-                            need_full = True
-                    else:
-                        if val < b:
-                            need_full = True
+                    # проверочный ресерч, если ход «пробивает» границы
+                    need_full = (pl == player and val > a) or (pl != player and val < b)
                     if need_full and not tg.should_stop():
                         val = ab(3 - pl, d - 1, a, b, new_key, depth_idx + 1)
 
@@ -519,19 +542,25 @@ class MyAI(Alg3D):
                     if val > best_local_val:
                         best_local_val = val
                         best_local_move = (x, y)
-                    a = max(a, val)
+                    if val > a:
+                        a = val
                     if a >= b:
+                        # beta-cutoff → killer + history
                         if best_local_move is not None:
                             self._push_killer(depth_idx, best_local_move)
+                            self._history_bonus(pl, best_local_move[0], best_local_move[1], d)
                         break
                 else:
                     if val < best_local_val:
                         best_local_val = val
                         best_local_move = (x, y)
-                    b = min(b, val)
+                    if val < b:
+                        b = val
                     if a >= b:
+                        # beta-cutoff на ветке соперника — тоже усиливаем history для их удачного хода
                         if best_local_move is not None:
                             self._push_killer(depth_idx, best_local_move)
+                            self._history_bonus(pl, best_local_move[0], best_local_move[1], d)
                         break
 
             # сохранить в TT
@@ -562,6 +591,8 @@ class MyAI(Alg3D):
         if not tg.should_stop():
             self._tt_store(root_key, depth, MyAI.TT_EXACT, bestv, best)
 
+        # Лёгкое периодическое затухание history
+        self._history_decay()
         return best
 
     def _alpha_beta_best_id(
@@ -591,7 +622,7 @@ class MyAI(Alg3D):
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
         """
-        Приоритет: win → block → собственный fork → блок opp-fork → safe → alpha-beta(ID+TT+LMR) → fallback.
+        Приоритет: win → block → собственный fork → блок opp-fork → safe → alpha-beta(ID+TT+LMR+History) → fallback.
         Все вычисления под защитой TimeGuard (CPU ~9.5s).
         """
         try:
@@ -634,7 +665,7 @@ class MyAI(Alg3D):
             if not cands:
                 return (0, 0)
 
-            # 6) Итеративное заглубление + TT + LMR
+            # 6) Итеративное заглубление + TT + LMR + History
             x, y = self._alpha_beta_best_id(board, player, cands, self.depth, tg)
             return self._validate_move(board, x, y)
 
