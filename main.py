@@ -1,38 +1,49 @@
 from typing import List, Tuple, Optional
-try:
-    from framework import Alg3D, Board
-except Exception:
-    from local_driver import Alg3D, Board  # type: ignore
+import time
 
+# Попытка взять типы из боевого/локального окружения фреймворка
+try:
+    from framework import Alg3D, Board  # type: ignore
+except Exception:
+    try:
+        from local_driver import Alg3D, Board  # type: ignore
+    except Exception:
+        # Фолбэк только для type hints при автономном запуске
+        Board = List[List[List[int]]]  # type: ignore
+        class Alg3D:  # type: ignore
+            pass
+
+
+# ---------------------- 4x4x4 Connect-Four: утилиты ----------------------
 
 def gen_lines():
     """Полный набор из 76 победных линий для 4x4x4."""
     L = []
-    # По оси X
+    # По оси X (для каждого y, z)
     for y in range(4):
         for z in range(4):
             L.append([(i, y, z) for i in range(4)])
-    # По оси Y  
+    # По оси Y (для каждого x, z)
     for x in range(4):
         for z in range(4):
             L.append([(x, i, z) for i in range(4)])
-    # По оси Z (вертикальные - важны!)
+    # По оси Z (для каждого x, y)
     for x in range(4):
         for y in range(4):
             L.append([(x, y, i) for i in range(4)])
-    # Диагонали в плоскостях z
+    # Диагонали в каждой плоскости z (x-y)
     for z in range(4):
         L.append([(i, i, z) for i in range(4)])
         L.append([(i, 3 - i, z) for i in range(4)])
-    # Диагонали в плоскостях y
+    # Диагонали в каждой плоскости y (x-z)
     for y in range(4):
         L.append([(i, y, i) for i in range(4)])
         L.append([(i, y, 3 - i) for i in range(4)])
-    # Диагонали в плоскостях x
+    # Диагонали в каждой плоскости x (y-z)
     for x in range(4):
         L.append([(x, i, i) for i in range(4)])
         L.append([(x, i, 3 - i) for i in range(4)])
-    # Пространственные диагонали
+    # 4 пространственные диагонали
     L.append([(i, i, i) for i in range(4)])
     L.append([(i, i, 3 - i) for i in range(4)])
     L.append([(i, 3 - i, i) for i in range(4)])
@@ -43,8 +54,8 @@ def gen_lines():
 LINES = gen_lines()
 
 
-def drop_z(board: List[List[List[int]]], x: int, y: int) -> Optional[int]:
-    """Куда упадет фишка в столбце (x,y)."""
+def drop_z(board: Board, x: int, y: int) -> Optional[int]:
+    """Куда «упадёт» фишка в столбце (x,y). None если столбец полон/вне границ."""
     if not (0 <= x < 4 and 0 <= y < 4):
         return None
     for z in range(4):
@@ -53,8 +64,13 @@ def drop_z(board: List[List[List[int]]], x: int, y: int) -> Optional[int]:
     return None
 
 
-def winner(board: List[List[List[int]]]) -> int:
-    """Есть ли победитель."""
+def board_full(board: Board) -> bool:
+    """Заполнено ли поле (смотрим верхний слой)."""
+    return all(board[3][y][x] != 0 for x in range(4) for y in range(4))
+
+
+def winner(board: Board) -> int:
+    """Победитель: 1 или 2; 0 если ещё нет."""
     for line in LINES:
         vals = [board[z][y][x] for (x, y, z) in line]
         if vals.count(1) == 4:
@@ -64,265 +80,394 @@ def winner(board: List[List[List[int]]]) -> int:
     return 0
 
 
-def valid_moves(board: List[List[List[int]]]):
-    """Все валидные ходы."""
-    for x in range(4):
-        for y in range(4):
-            if board[3][y][x] == 0:
+def valid_moves(board: Board):
+    """Итератор по всем допустимым (x,y), где столбец не полон."""
+    for y in range(4):
+        for x in range(4):
+            if drop_z(board, x, y) is not None:
                 yield (x, y)
 
 
-def simple_eval(board: List[List[List[int]]], me: int) -> int:
-    """Простая оценочная функция."""
+def eval_board(board: Board, me: int) -> int:
+    """
+    Лёгкая эвристика:
+    - Немедленные состояния (win/lose) даём большим числом.
+    - Небольшой бонус за центр и высоту (z).
+    - Линейные потенциалы: открытые линии только моих/их фишек.
+    """
     opp = 3 - me
     w = winner(board)
     if w == me:
-        return 10000
+        return 10_000
     if w == opp:
-        return -10000
-    
+        return -10_000
+
     score = 0
-    
-    # Простая оценка линий
+
+    # Центр (ближе к (1.5,1.5)) и высота z — маленькие локальные бонусы
+    for x in range(4):
+        for y in range(4):
+            for z in range(4):
+                p = board[z][y][x]
+                if p == 0:
+                    continue
+                cent = 3 - int(abs(x - 1.5) + abs(y - 1.5))  # 3..0
+                h = z  # 0..3
+                s = cent + h
+                if p == me:
+                    score += s
+                else:
+                    score -= s
+
+    # Потенциалы линий: открытые (только мои либо только их)
     for line in LINES:
-        c1 = c2 = c0 = 0
+        mine = theirs = empty = 0
         for (x, y, z) in line:
             v = board[z][y][x]
-            if v == 1:
-                c1 += 1
-            elif v == 2:
-                c2 += 1
+            if v == 0:
+                empty += 1
+            elif v == me:
+                mine += 1
             else:
-                c0 += 1
-        
-        # Только чистые линии
-        if c1 > 0 and c2 > 0:
+                theirs += 1
+        # Блокированные линии (оба игрока в линии) — пропускаем
+        if mine > 0 and theirs > 0:
             continue
-            
-        mine = c1 if me == 1 else c2
-        theirs = c2 if me == 1 else c1
-        
         if theirs == 0:
-            if mine == 3:
-                score += 500
-            elif mine == 2:
-                score += 50
-            elif mine == 1:
-                score += 5
+            # Только мои
+            if mine == 3 and empty == 1:
+                score += 240
+            elif mine == 2 and empty == 2:
+                score += 40
+            elif mine == 1 and empty == 3:
+                score += 4
         elif mine == 0:
-            if theirs == 3:
-                score -= 500
-            elif theirs == 2:
-                score -= 50
-            elif theirs == 1:
-                score -= 5
-    
+            # Только их
+            if theirs == 3 and empty == 1:
+                score -= 240
+            elif theirs == 2 and empty == 2:
+                score -= 40
+            elif theirs == 1 and empty == 3:
+                score -= 4
+
     return score
 
 
+# -------------------------------- ИИ --------------------------------
+
 class MyAI(Alg3D):
-    def __init__(self):
-        pass
-    
-    def safe_move(self, board: List[List[List[int]]]) -> Tuple[int, int]:
-        """Абсолютно безопасный fallback."""
-        moves = [(1,1), (2,2), (1,2), (2,1), (0,1), (1,0), (3,2), (2,3),
-                 (0,2), (2,0), (3,1), (1,3), (0,0), (3,3), (0,3), (3,0)]
-        
-        for x, y in moves:
-            if 0 <= x < 4 and 0 <= y < 4:
-                if drop_z(board, x, y) is not None:
-                    return (x, y)
-        
-        # Последний шанс
-        for x in range(4):
-            for y in range(4):
-                if drop_z(board, x, y) is not None:
-                    return (x, y)
-        
+    def __init__(self, depth: int = 2):
+        # depth — максимальная глубина для итеративного заглубления (1..depth)
+        self.depth = depth
+
+    # ---------- Лимитер времени (CPU + мягкий по wall) ----------
+
+    class _TimeGuard:
+        def __init__(self, cpu_limit: float = 9.5, wall_limit: float = 29.0):
+            # CPU-время (то, что учитывает ограничитель сервера)
+            self.cpu_start = time.process_time()
+            self.cpu_limit = cpu_limit
+            # Доп. мягкий ограничитель по «настенным» секундах (на всякий случай)
+            self.wall_start = time.perf_counter()
+            self.wall_limit = wall_limit
+
+        def over_cpu(self) -> bool:
+            return (time.process_time() - self.cpu_start) >= self.cpu_limit
+
+        def over_wall(self) -> bool:
+            return (time.perf_counter() - self.wall_start) >= self.wall_limit
+
+        def should_stop(self) -> bool:
+            # Жёстко по CPU, мягко по wall
+            return self.over_cpu() or self.over_wall()
+
+    # ---------- Безопасные помощники ----------
+
+    def _first_legal_move(self, board: Board) -> Tuple[int, int]:
+        """Гарантированный валидный ход (центр-сначала, затем остальные)."""
+        order = [
+            (1, 1), (2, 2), (1, 2), (2, 1),
+            (0, 1), (1, 0), (3, 2), (2, 3),
+            (0, 2), (2, 0), (3, 1), (1, 3),
+            (0, 0), (3, 3), (0, 3), (3, 0),
+        ]
+        for x, y in order:
+            if drop_z(board, x, y) is not None:
+                return (x, y)
+        # Если по какой-то причине всё занято (должно ловиться раньше)
+        for (x, y) in valid_moves(board):
+            return (x, y)
         return (0, 0)
-    
-    def find_win(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
-        """Поиск немедленной победы."""
+
+    def _validate_move(self, board: Board, x: int, y: int) -> Tuple[int, int]:
+        """Возвращает (x,y) если столбец доступен, иначе — первый валидный."""
+        if drop_z(board, x, y) is not None:
+            return (x, y)
+        return self._first_legal_move(board)
+
+    def get_winning_lines(self):
+        return LINES
+
+    # ---------- Примитивы ----------
+
+    def _immediate_win(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        """Есть ли ход, который выигрывает сразу."""
         for (x, y) in valid_moves(board):
             z = drop_z(board, x, y)
             if z is None:
                 continue
-            
+            board[z][y][x] = player
+            won = (winner(board) == player)
+            board[z][y][x] = 0
+            if won:
+                return (x, y)
+        return None
+
+    def _my_immediate_wins_in_position(self, board: Board, player: int) -> List[Tuple[int, int]]:
+        """Вернуть все (x,y), которыми я выиграю немедленно в текущей позиции."""
+        wins: List[Tuple[int, int]] = []
+        for (x, y) in valid_moves(board):
+            z = drop_z(board, x, y)
+            if z is None:
+                continue
             board[z][y][x] = player
             if winner(board) == player:
-                board[z][y][x] = 0
-                return (x, y)
+                wins.append((x, y))
             board[z][y][x] = 0
-        return None
-    
-    def find_block(self, board: Board, player: int) -> List[Tuple[int, int]]:
-        """Поиск критических блокировок."""
+        return wins
+
+    def _creates_fork(self, board: Board, player: int, x: int, y: int) -> bool:
+        """Проверить, создаёт ли ход (x,y) форк — ≥2 независимых немедленных выигрыша."""
+        z = drop_z(board, x, y)
+        if z is None:
+            return False
+        board[z][y][x] = player
+
         opp = 3 - player
-        blocks = []
-        
-        for line in LINES:
-            opp_count = 0
-            empty_pos = None
-            
-            for (x, y, z) in line:
-                v = board[z][y][x]
-                if v == opp:
-                    opp_count += 1
-                elif v == 0:
-                    if drop_z(board, x, y) == z:
-                        empty_pos = (x, y)
-            
-            if opp_count == 3 and empty_pos is not None:
-                blocks.append(empty_pos)
-        
-        return blocks
-    
-    def find_fork(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
-        """Простой поиск форка."""
+        # Если даём немедленный выигрыш сопернику — это не форк для нас
+        opp_win = self._immediate_win(board, opp)
+        if opp_win is not None:
+            board[z][y][x] = 0
+            return False
+
+        my_wins = self._my_immediate_wins_in_position(board, player)
+        board[z][y][x] = 0
+
+        if len(my_wins) < 2:
+            return False
+        # важен не просто счёт, а чтобы были разные столбцы
+        cols = {(cx, cy) for (cx, cy) in my_wins}
+        return len(cols) >= 2
+
+    def _find_own_fork(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        for (x, y) in valid_moves(board):
+            if self._creates_fork(board, player, x, y):
+                return (x, y)
+        return None
+
+    def _find_block_opp_fork(self, board: Board, player: int) -> Optional[Tuple[int, int]]:
+        """Если у соперника есть форк-ход, попробуем его заблокировать или контрфоркнуть."""
+        opp = 3 - player
+
+        # 1) собрать все их форк-ходы
+        opp_forks: List[Tuple[int, int]] = []
+        for (x, y) in valid_moves(board):
+            if self._creates_fork(board, opp, x, y):
+                opp_forks.append((x, y))
+        if not opp_forks:
+            return None
+
+        # 2) прямой блок: если можно поставить в тот же столбец (x,y), закрывая форк
+        for (x, y) in opp_forks:
+            z = drop_z(board, x, y)
+            if z is not None:
+                return (x, y)
+
+        # 3) «мешающий» ход: сделаем такой ход, после которого у opp не останется немедленного форка
         for (x, y) in valid_moves(board):
             z = drop_z(board, x, y)
             if z is None:
                 continue
-                
             board[z][y][x] = player
-            
-            # Считаем победные ходы после этого
-            wins = 0
-            for (mx, my) in valid_moves(board):
-                mz = drop_z(board, mx, my)
-                if mz is None:
-                    continue
-                board[mz][my][mx] = player
-                if winner(board) == player:
-                    wins += 1
-                board[mz][my][mx] = 0
-            
+            still_fork = False
+            for (ox, oy) in valid_moves(board):
+                if self._creates_fork(board, opp, ox, oy):
+                    still_fork = True
+                    break
             board[z][y][x] = 0
-            
-            if wins >= 2:
+            if not still_fork:
                 return (x, y)
-        
-        return None
-    
-    def minimax_simple(self, board: Board, player: int, depth: int, maximizing: bool) -> int:
-        """Простой minimax."""
-        if depth == 0 or winner(board) != 0:
-            return simple_eval(board, player)
-        
-        moves = list(valid_moves(board))
-        if not moves:
-            return simple_eval(board, player)
-        
-        # Ограничиваем количество ходов для скорости
-        if len(moves) > 6:
-            center_moves = sorted(moves, key=lambda m: abs(m[0]-1.5) + abs(m[1]-1.5))
-            moves = center_moves[:6]
-        
-        if maximizing:
-            max_eval = -50000
-            for x, y in moves:
-                z = drop_z(board, x, y)
-                if z is None:
-                    continue
-                board[z][y][x] = player
-                eval_score = self.minimax_simple(board, player, depth-1, False)
-                board[z][y][x] = 0
-                max_eval = max(max_eval, eval_score)
-            return max_eval
-        else:
-            min_eval = 50000
-            opp = 3 - player
-            for x, y in moves:
-                z = drop_z(board, x, y)
-                if z is None:
-                    continue
-                board[z][y][x] = opp
-                eval_score = self.minimax_simple(board, player, depth-1, True)
-                board[z][y][x] = 0
-                min_eval = min(min_eval, eval_score)
-            return min_eval
-    
-    def get_best_simple(self, board: Board, player: int, candidates: List[Tuple[int, int]]) -> Tuple[int, int]:
-        """Простой поиск лучшего хода."""
-        if not candidates:
-            return self.safe_move(board)
-        
-        best_move = candidates[0]
-        best_score = -50000
-        
-        for x, y in candidates:
+
+        # 4) fallback: хотя бы блокируем один из их форков (если можно)
+        return opp_forks[0]
+
+    def _is_safe(self, board: Board, player: int, x: int, y: int) -> bool:
+        """После нашего хода соперник не получает немедленную победу."""
+        opp = 3 - player
+        z = drop_z(board, x, y)
+        if z is None:
+            return False
+        board[z][y][x] = player
+        safe = True
+        for (ox, oy) in valid_moves(board):
+            oz = drop_z(board, ox, oy)
+            if oz is None:
+                continue
+            board[oz][oy][ox] = opp
+            if winner(board) == opp:
+                safe = False
+                board[oz][oy][ox] = 0
+                break
+            board[oz][oy][ox] = 0
+        board[z][y][x] = 0
+        return safe
+
+    # ---------- Alpha-Beta + TimeGuard ----------
+
+    def _alpha_beta_best_depth(
+        self,
+        board: Board,
+        player: int,
+        candidates: List[Tuple[int, int]],
+        depth: int,
+        tg: "_TimeGuard",
+    ) -> Tuple[int, int]:
+        opp = 3 - player
+
+        # Move ordering: центр сначала
+        candidates = sorted(candidates, key=lambda m: (abs(m[0] - 1.5) + abs(m[1] - 1.5)))
+
+        def ab(pl: int, d: int, a: int, b: int) -> int:
+            # Ранний выход по лимиту
+            if tg.should_stop():
+                return eval_board(board, player)
+
+            w = winner(board)
+            if w == player:
+                return 10_000 - max(0, d)
+            if w == opp:
+                return -10_000 + max(0, d)
+            if d == 0 or board_full(board):
+                return eval_board(board, player)
+
+            if pl == player:
+                v = -10**9
+                for (x, y) in candidates:
+                    if tg.should_stop():
+                        break
+                    z = drop_z(board, x, y)
+                    if z is None:
+                        continue
+                    board[z][y][x] = pl
+                    v = max(v, ab(opp, d - 1, a, b))
+                    board[z][y][x] = 0
+                    a = max(a, v)
+                    if b <= a:
+                        break
+                return v
+            else:
+                v = 10**9
+                for (x, y) in candidates:
+                    if tg.should_stop():
+                        break
+                    z = drop_z(board, x, y)
+                    if z is None:
+                        continue
+                    board[z][y][x] = pl
+                    v = min(v, ab(player, d - 1, a, b))
+                    board[z][y][x] = 0
+                    b = min(b, v)
+                    if b <= a:
+                        break
+                return v
+
+        best = candidates[0]
+        bestv = -10**9
+        for (x, y) in candidates:
+            if tg.should_stop():
+                break
             z = drop_z(board, x, y)
             if z is None:
                 continue
-            
             board[z][y][x] = player
-            score = self.minimax_simple(board, player, 2, False)
+            v = ab(opp, depth - 1, -10**9, 10**9)
             board[z][y][x] = 0
-            
-            if score > best_score:
-                best_score = score
-                best_move = (x, y)
-        
-        return best_move
-    
+            if v > bestv:
+                bestv, best = v, (x, y)
+        return best
+
+    def _alpha_beta_best_id(
+        self,
+        board: Board,
+        player: int,
+        candidates: List[Tuple[int, int]],
+        max_depth: int,
+        tg: "_TimeGuard",
+    ) -> Tuple[int, int]:
+        """Итеративное заглубление: 1..max_depth. Возвращаем лучший-so-far."""
+        best_so_far = candidates[0]
+        for d in range(1, max_depth + 1):
+            if tg.should_stop():
+                break
+            best_so_far = self._alpha_beta_best_depth(board, player, candidates, d, tg)
+        return best_so_far
+
+    # ------------------------ Главная точка входа ------------------------
+
     def get_move(
-        self, 
-        board: List[List[List[int]]], 
-        player: int, 
+        self,
+        board: List[List[List[int]]],  # [z][y][x]
+        player: int,
         last_move: Tuple[int, int, int]
     ) -> Tuple[int, int]:
-        """Максимально простая и надежная стратегия."""
+        """
+        Приоритет: win → block → собственный fork → блок opp-fork → safe → alpha-beta(ID) → fallback.
+        Все вычисления под защитой TimeGuard (CPU ~9.5s).
+        """
         try:
-            # 1. Немедленная победа
-            win = self.find_win(board, player)
-            if win:
-                z = drop_z(board, win[0], win[1])
-                if z is not None:
-                    return win
-            
+            tg = self._TimeGuard(cpu_limit=9.5, wall_limit=29.0)
+
+            # 0) микробук (старт: поле пусто) — небольшой приоритет к центру/полуцентру
+            if all(board[0][y][x] == 0 for x in range(4) for y in range(4)):
+                for pref in [(1, 1), (2, 2), (1, 2), (2, 1)]:
+                    if tg.should_stop():
+                        break
+                    if drop_z(board, *pref) is not None:
+                        return self._validate_move(board, *pref)
+
+            # 1) мгновенная победа
+            mv = self._immediate_win(board, player)
+            if mv is not None:
+                return self._validate_move(board, mv[0], mv[1])
+
             opp = 3 - player
-            
-            # 2. Блокировка критических угроз
-            blocks = self.find_block(board, player)
-            if blocks:
-                for block in blocks:
-                    z = drop_z(board, block[0], block[1])
-                    if z is not None:
-                        return block
-            
-            # 3. Обычная блокировка
-            block = self.find_win(board, opp)
-            if block:
-                z = drop_z(board, block[0], block[1])
-                if z is not None:
-                    return block
-            
-            # 4. Попытка форка
-            fork = self.find_fork(board, player)
-            if fork:
-                z = drop_z(board, fork[0], fork[1])
-                if z is not None:
-                    return fork
-            
-            # 5. Блокировка форка противника  
-            opp_fork = self.find_fork(board, opp)
-            if opp_fork:
-                z = drop_z(board, opp_fork[0], opp_fork[1])
-                if z is not None:
-                    return opp_fork
-            
-            # 6. Лучший ход из доступных
-            moves = list(valid_moves(board))
-            if moves:
-                best = self.get_best_simple(board, player, moves)
-                z = drop_z(board, best[0], best[1])
-                if z is not None:
-                    return best
-            
-            # 7. Аварийный fallback
-            return self.safe_move(board)
-            
-        except:
-            # При любой ошибке - безопасный ход
-            return self.safe_move(board)
+
+            # 2) мгновенный блок
+            mv = self._immediate_win(board, opp)
+            if mv is not None:
+                return self._validate_move(board, mv[0], mv[1])
+
+            # 3) собственный форк (двойная угроза)
+            mv = self._find_own_fork(board, player)
+            if mv is not None:
+                return self._validate_move(board, mv[0], mv[1])
+
+            # 4) блок чужого форка (или контрфорк)
+            mv = self._find_block_opp_fork(board, player)
+            if mv is not None:
+                return self._validate_move(board, mv[0], mv[1])
+
+            # 5) кандидаты (safe-фильтр). Если safe-пусто — берём все валидные.
+            cands = [m for m in valid_moves(board) if self._is_safe(board, player, m[0], m[1])]
+            if not cands:
+                cands = list(valid_moves(board))
+            if not cands:  # поле заполнено
+                return (0, 0)
+
+            # 6) Итеративное заглубление alpha-beta: 1..self.depth (пока позволяет время)
+            x, y = self._alpha_beta_best_id(board, player, cands, self.depth, tg)
+            return self._validate_move(board, x, y)
+
+        except Exception:
+            # Любая ошибка → гарантированный валидный ход
+            return self._first_legal_move(board)
